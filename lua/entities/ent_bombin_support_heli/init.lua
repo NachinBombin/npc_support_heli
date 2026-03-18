@@ -47,8 +47,8 @@ ENT.GAU_FirstBurstTime   = 0
 ENT.GAU_SecondBurstTime  = 4
 
 -- [SLOT 2] 30mm 2A42 — Sustained spray
-ENT.GAU_Spray_Delay          = 0.075
-ENT.GAU_Spray_JitterAmount   = 250
+ENT.GAU_Spray_Delay        = 0.075
+ENT.GAU_Spray_JitterAmount = 250
 
 -- [SLOT 3] S-8 80mm rocket salvo
 ENT.S8_Delay        = 0.15
@@ -69,8 +69,6 @@ ENT.VIKHR_MuzzlePoints = {
     Vector(20, -80, 46),
     Vector(20,  80, 46),
 }
-
-ENT.FadeDuration = 2.0
 
 -- ============================================================
 -- INITIALIZE
@@ -115,8 +113,9 @@ function ENT:Initialize()
     self:SetBodygroup(3, 1)
     self:SetBodygroup(5, 2)
 
-    self:SetRenderMode(RENDERMODE_TRANSALPHA)
-    self:SetColor(Color(255, 255, 255, 0))
+    -- Fully opaque, no transparency
+    self:SetRenderMode(RENDERMODE_NORMAL)
+    self:SetColor(Color(255, 255, 255, 255))
 
     self:SetNWInt("HP",    100)
     self:SetNWInt("MaxHP", 100)
@@ -156,7 +155,6 @@ function ENT:Initialize()
     self.BurstShots = 0
     self.GAUFiring  = false
     self.GAUStart   = 0
-    self.FadeAlpha  = 0
 end
 
 -- ============================================================
@@ -217,7 +215,7 @@ function ENT:Think()
     local now = CurTime()
 
     if now > self.DieTime then
-        self:BeginFade()
+        self:Remove()
         return
     end
 
@@ -233,11 +231,6 @@ end
 
 function ENT:UpdateFlight(now)
     local pos = self:GetPos()
-
-    if self.FadeAlpha < 255 then
-        self.FadeAlpha = math.min(255, self.FadeAlpha + 255 * FrameTime() / self.FadeDuration)
-        self:SetColor(Color(255, 255, 255, math.floor(self.FadeAlpha)))
-    end
 
     local orbitAngle = (now - self.SpawnTime) * (self.Speed / self.OrbitRadius)
     local orbitX     = self.CenterPos.x + math.cos(orbitAngle) * self.OrbitRadius
@@ -485,32 +478,11 @@ function ENT:FireVikhr(targetPos, now)
 end
 
 -- ============================================================
--- FADE OUT
+-- CLEANUP
 -- ============================================================
-
-function ENT:BeginFade()
-    if self.Fading then return end
-    self.Fading  = true
-    self.FadeOut = 255
-    if self.RotorLoopClose then self.RotorLoopClose:ChangeVolume(0, self.FadeDuration) end
-    if self.RotorLoopDist  then self.RotorLoopDist:ChangeVolume(0,  self.FadeDuration) end
-    if self.GAUSound       then self.GAUSound:Stop() end
-
-    timer.Create("BombinHeli_FadeOut_" .. self:EntIndex(), 0.05, 0, function()
-        if not IsValid(self) then return end
-        self.FadeOut = self.FadeOut - (255 / (self.FadeDuration / 0.05))
-        if self.FadeOut <= 0 then
-            timer.Remove("BombinHeli_FadeOut_" .. self:EntIndex())
-            self:Remove()
-            return
-        end
-        self:SetColor(Color(255, 255, 255, math.max(0, math.floor(self.FadeOut))))
-    end)
-end
 
 function ENT:OnRemove()
     if self.RotorLoopClose then self.RotorLoopClose:Stop() end
     if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
     if self.GAUSound       then self.GAUSound:Stop()        end
-    timer.Remove("BombinHeli_FadeOut_" .. self:EntIndex())
 end
