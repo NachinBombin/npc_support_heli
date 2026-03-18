@@ -3,14 +3,6 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 -- ============================================================
--- GRED GUARD
--- ============================================================
-
-local function HasGred()
-    return gred and gred.CreateBullet and gred.CreateShell
-end
-
--- ============================================================
 -- SOUNDS — KA-50 profile
 -- ============================================================
 
@@ -35,16 +27,15 @@ ENT.MuzzlePoints = {
 }
 
 -- [SLOT 1] 30mm 2A42 — Burst mode
-ENT.GAU_BurstCount       = 10
-ENT.GAU_BurstDelay       = 0.075
-ENT.GAU_Caliber          = "wac_base_30mm"
-ENT.GAU_TracerColor      = "Green"
-ENT.GAU_DamageMul        = 1.0
-ENT.GAU_RadiusMul        = 0.8
-ENT.GAU_SweepHalfLength  = 300
-ENT.GAU_JitterAmount     = 150
-ENT.GAU_FirstBurstTime   = 0
-ENT.GAU_SecondBurstTime  = 4
+ENT.GAU_BurstCount      = 10
+ENT.GAU_BurstDelay      = 0.075
+ENT.GAU_SweepHalfLength = 300
+ENT.GAU_JitterAmount    = 150
+ENT.GAU_SecondBurstTime = 4
+-- Bullet props (matched to wac_pod_gunner 30mm)
+ENT.GAU_Speed   = 1000
+ENT.GAU_Damage  = 40
+ENT.GAU_Radius  = 70
 
 -- [SLOT 2] 30mm 2A42 — Sustained spray
 ENT.GAU_Spray_Delay        = 0.075
@@ -113,7 +104,6 @@ function ENT:Initialize()
     self:SetBodygroup(3, 1)
     self:SetBodygroup(5, 2)
 
-    -- Fully opaque, no transparency
     self:SetRenderMode(RENDERMODE_NORMAL)
     self:SetColor(Color(255, 255, 255, 255))
 
@@ -154,7 +144,6 @@ function ENT:Initialize()
     self.nextShot   = CurTime() + 3.0
     self.BurstShots = 0
     self.GAUFiring  = false
-    self.GAUStart   = 0
 end
 
 -- ============================================================
@@ -261,7 +250,6 @@ end
 -- ============================================================
 
 function ENT:UpdateWeapons(now)
-    if not HasGred() then return end
     if now < self.nextShot then return end
 
     local bestPly  = nil
@@ -301,6 +289,32 @@ function ENT:UpdateWeapons(now)
 end
 
 -- ============================================================
+-- HELPER: spawn a wac_base_30mm bullet entity
+-- ============================================================
+
+function ENT:Spawn30mm(muzzle, aimPos)
+    local b = ents.Create("wac_base_30mm")
+    if not IsValid(b) then return end
+    local ang = (aimPos - muzzle):Angle()
+    ang = ang + Angle(
+        math.Rand(-3, 3),
+        math.Rand(-3, 3),
+        math.Rand(-3, 3)
+    )
+    b:SetPos(muzzle)
+    b:SetAngles(ang)
+    b.Speed   = self.GAU_Speed
+    b.Damage  = self.GAU_Damage
+    b.Radius  = self.GAU_Radius
+    b.Size    = 0
+    b.Width   = 0
+    b.col     = Color(0, 255, 0)
+    b.Owner   = self
+    b:Spawn()
+    util.SpriteTrail(b, 0, Color(0, 255, 0), false, 5, 5, 0.05, 1/16*0.5, "trails/laser.vmt")
+end
+
+-- ============================================================
 -- 2A42 Burst
 -- ============================================================
 
@@ -324,26 +338,16 @@ function ENT:FireGAU_Burst(targetPos, now)
         end
     end
 
-    local muzzle = self:LocalToWorld(self.MuzzlePoints[1])
-    local spread = Vector(
+    local muzzle      = self:LocalToWorld(self.MuzzlePoints[1])
+    local jitter      = Vector(
         math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
         math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
         0
     )
     local sweepOffset = math.sin(self.BurstShots / self.GAU_BurstCount * math.pi) * self.GAU_SweepHalfLength
-    local aimPos = targetPos + spread + self:GetRight() * sweepOffset
-    local dir    = (aimPos - muzzle):GetNormalized()
+    local aimPos      = targetPos + jitter + self:GetRight() * sweepOffset
 
-    gred.CreateBullet({
-        Attacker  = self,
-        Inflictor = self,
-        Pos       = muzzle,
-        Dir       = dir,
-        Caliber   = self.GAU_Caliber,
-        DamageMul = self.GAU_DamageMul,
-        RadiusMul = self.GAU_RadiusMul,
-        Tracer    = self.GAU_TracerColor,
-    })
+    self:Spawn30mm(muzzle, aimPos)
 
     self.BurstShots = self.BurstShots + 1
     self.nextShot   = now + self.GAU_BurstDelay
@@ -376,23 +380,14 @@ function ENT:FireGAU_Spray(targetPos, now)
     end
 
     local muzzle = self:LocalToWorld(self.MuzzlePoints[1])
-    local spread = Vector(
+    local jitter = Vector(
         math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
         math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
         math.Rand(-50, 50)
     )
-    local dir = (targetPos + spread - muzzle):GetNormalized()
+    local aimPos = targetPos + jitter
 
-    gred.CreateBullet({
-        Attacker  = self,
-        Inflictor = self,
-        Pos       = muzzle,
-        Dir       = dir,
-        Caliber   = self.GAU_Caliber,
-        DamageMul = self.GAU_DamageMul,
-        RadiusMul = self.GAU_RadiusMul,
-        Tracer    = self.GAU_TracerColor,
-    })
+    self:Spawn30mm(muzzle, aimPos)
 
     self.SprayCount = self.SprayCount + 1
     self.nextShot   = now + self.GAU_Spray_Delay
