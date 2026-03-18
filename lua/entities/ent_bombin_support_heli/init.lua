@@ -29,12 +29,10 @@ ENT.MuzzlePoints = {
 -- [SLOT 1] 30mm 2A42 — Burst mode
 ENT.GAU_BurstCount      = 10
 ENT.GAU_BurstDelay      = 0.075
+ENT.GAU_Damage          = 40
 ENT.GAU_SweepHalfLength = 300
 ENT.GAU_JitterAmount    = 150
 ENT.GAU_SecondBurstTime = 4
-ENT.GAU_Speed           = 1000
-ENT.GAU_Damage          = 40
-ENT.GAU_Radius          = 70
 
 -- [SLOT 2] 30mm 2A42 — Sustained spray
 ENT.GAU_Spray_Delay        = 0.075
@@ -62,17 +60,15 @@ ENT.VIKHR_MuzzlePoints = {
 
 -- ============================================================
 -- INITIALIZE
--- NWVars are set by the spawner BEFORE Spawn()/Initialize(),
--- so they are always available here.
 -- ============================================================
 
 function ENT:Initialize()
-    self.CenterPos    = self:GetNWVector("BH_CenterPos",    self:GetPos())
-    self.CallDir      = self:GetNWVector("BH_CallDir",      Vector(1,0,0))
-    self.Lifetime     = self:GetNWFloat( "BH_Lifetime",     40)
-    self.Speed        = self:GetNWFloat( "BH_Speed",        250)
-    self.OrbitRadius  = self:GetNWFloat( "BH_OrbitRadius",  2500)
-    self.SkyHeightAdd = self:GetNWFloat( "BH_SkyHeightAdd", 2500)
+    self.CenterPos    = self:GetVar("CenterPos",    self:GetPos())
+    self.CallDir      = self:GetVar("CallDir",      Vector(1,0,0))
+    self.Lifetime     = self:GetVar("Lifetime",     40)
+    self.Speed        = self:GetVar("Speed",        250)
+    self.OrbitRadius  = self:GetVar("OrbitRadius",  2500)
+    self.SkyHeightAdd = self:GetVar("SkyHeightAdd", 2500)
 
     if self.CallDir:LengthSqr() <= 1 then self.CallDir = Vector(1,0,0) end
     self.CallDir.z = 0
@@ -113,6 +109,7 @@ function ENT:Initialize()
 
     local ang = self.CallDir:Angle()
     self:SetAngles(Angle(0, ang.y - 90, 0))
+    self.ang = self:GetAngles()
 
     self.PhysObj = self:GetPhysicsObject()
     if IsValid(self.PhysObj) then
@@ -138,10 +135,13 @@ function ENT:Initialize()
         self.RotorLoopDist:Play()
     end
 
+    self.Phase      = "approach"
+    self.PhaseTime  = CurTime()
     self.WeaponSlot = 1
     self.nextShot   = CurTime() + 3.0
     self.BurstShots = 0
     self.GAUFiring  = false
+    self.GAUStart   = 0
 end
 
 -- ============================================================
@@ -200,7 +200,12 @@ end
 
 function ENT:Think()
     local now = CurTime()
-    if now > self.DieTime then self:Remove() return end
+
+    if now > self.DieTime then
+        self:Remove()
+        return
+    end
+
     self:UpdateFlight(now)
     self:UpdateWeapons(now)
     self:NextThink(now)
@@ -212,7 +217,8 @@ end
 -- ============================================================
 
 function ENT:UpdateFlight(now)
-    local pos        = self:GetPos()
+    local pos = self:GetPos()
+
     local orbitAngle = (now - self.SpawnTime) * (self.Speed / self.OrbitRadius)
     local orbitX     = self.CenterPos.x + math.cos(orbitAngle) * self.OrbitRadius
     local orbitY     = self.CenterPos.y + math.sin(orbitAngle) * self.OrbitRadius
@@ -222,7 +228,7 @@ function ENT:UpdateFlight(now)
     if moveDir:LengthSqr() > 1 then moveDir:Normalize() end
 
     local newPos = pos + moveDir * self.Speed * FrameTime()
-    newPos.z = self.sky
+    newPos.z     = self.sky
 
     self:SetPos(newPos)
 
@@ -244,14 +250,21 @@ end
 function ENT:UpdateWeapons(now)
     if now < self.nextShot then return end
 
-    local bestPly, bestDist = nil, math.huge
+    local bestPly  = nil
+    local bestDist = math.huge
     for _, ply in ipairs(player.GetHumans()) do
         if not IsValid(ply) or not ply:Alive() then continue end
         local d = self:GetPos():Distance(ply:GetPos())
-        if d < bestDist then bestDist = d bestPly = ply end
+        if d < bestDist then
+            bestDist = d
+            bestPly  = ply
+        end
     end
 
-    if not IsValid(bestPly) then self.nextShot = now + 2.0 return end
+    if not IsValid(bestPly) then
+        self.nextShot = now + 2.0
+        return
+    end
 
     local targetPos = bestPly:GetPos() + Vector(0, 0, 40)
     local dist      = self:GetPos():Distance(targetPos)
@@ -274,25 +287,37 @@ function ENT:UpdateWeapons(now)
 end
 
 -- ============================================================
--- HELPER: spawn a wac_base_30mm bullet entity
+-- GAU HITSCAN HELPER
+-- Fires one instant hitscan round. Zero gred dependency.
 -- ============================================================
 
-function ENT:Spawn30mm(muzzle, aimPos)
-    local b = ents.Create("wac_base_30mm")
-    if not IsValid(b) then return end
-    local ang = (aimPos - muzzle):Angle()
-    ang = ang + Angle(math.Rand(-3,3), math.Rand(-3,3), math.Rand(-3,3))
-    b:SetPos(muzzle)
-    b:SetAngles(ang)
-    b.Speed  = self.GAU_Speed
-    b.Damage = self.GAU_Damage
-    b.Radius = self.GAU_Radius
-    b.Size   = 0
-    b.Width  = 0
-    b.col    = Color(0, 255, 0)
-    b.Owner  = self
-    b:Spawn()
-    util.SpriteTrail(b, 0, Color(0,255,0), false, 5, 5, 0.05, 1/16*0.5, "trails/laser.vmt")
+function ENT:FireHitscan(muzzle, aimPos)
+    local dir = (aimPos - muzzle):GetNormalized()
+    local tr  = util.TraceLine({
+        start  = muzzle,
+        endpos = muzzle + dir * 8000,
+        filter = self,
+        mask   = MASK_SHOT,
+    })
+
+    -- Tracer effect visible to all clients
+    local eff = EffectData()
+    eff:SetStart(muzzle)
+    eff:SetOrigin(tr.HitPos)
+    eff:SetNormal(dir)
+    util.Effect("Tracer", eff, true, true)
+
+    -- Damage on hit
+    if IsValid(tr.Entity) and tr.Entity ~= self then
+        local dmg = DamageInfo()
+        dmg:SetDamage(self.GAU_Damage)
+        dmg:SetAttacker(self)
+        dmg:SetInflictor(self)
+        dmg:SetDamageType(DMG_BULLET)
+        dmg:SetDamagePosition(tr.HitPos)
+        dmg:SetDamageForce(dir * 1000)
+        tr.Entity:TakeDamageInfo(dmg)
+    end
 end
 
 -- ============================================================
@@ -313,15 +338,23 @@ function ENT:FireGAU_Burst(targetPos, now)
     if not self.GAUFiring then
         self.GAUFiring = true
         self.GAUSound  = CreateSound(self, GAU_LOOP_SOUND)
-        if self.GAUSound then self.GAUSound:SetSoundLevel(100) self.GAUSound:Play() end
+        if self.GAUSound then
+            self.GAUSound:SetSoundLevel(100)
+            self.GAUSound:Play()
+        end
     end
 
     local muzzle      = self:LocalToWorld(self.MuzzlePoints[1])
-    local jitter      = Vector(math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount), math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount), 0)
+    local spread      = Vector(
+        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
+        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
+        0
+    )
     local sweepOffset = math.sin(self.BurstShots / self.GAU_BurstCount * math.pi) * self.GAU_SweepHalfLength
-    local aimPos      = targetPos + jitter + self:GetRight() * sweepOffset
+    local aimPos      = targetPos + spread + self:GetRight() * sweepOffset
 
-    self:Spawn30mm(muzzle, aimPos)
+    self:FireHitscan(muzzle, aimPos)
+
     self.BurstShots = self.BurstShots + 1
     self.nextShot   = now + self.GAU_BurstDelay
 end
@@ -346,12 +379,21 @@ function ENT:FireGAU_Spray(targetPos, now)
     if not self.GAUFiring then
         self.GAUFiring = true
         self.GAUSound  = CreateSound(self, GAU_LOOP_SOUND)
-        if self.GAUSound then self.GAUSound:SetSoundLevel(100) self.GAUSound:Play() end
+        if self.GAUSound then
+            self.GAUSound:SetSoundLevel(100)
+            self.GAUSound:Play()
+        end
     end
 
     local muzzle = self:LocalToWorld(self.MuzzlePoints[1])
-    local jitter = Vector(math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount), math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount), math.Rand(-50,50))
-    self:Spawn30mm(muzzle, targetPos + jitter)
+    local spread = Vector(
+        math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
+        math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
+        math.Rand(-50, 50)
+    )
+
+    self:FireHitscan(muzzle, targetPos + spread)
+
     self.SprayCount = self.SprayCount + 1
     self.nextShot   = now + self.GAU_Spray_Delay
 end
@@ -373,8 +415,12 @@ function ENT:FireS8(targetPos, now)
 
     local muzzleIdx = (self.S8Fired % #self.S8_MuzzlePoints) + 1
     local muzzle    = self:LocalToWorld(self.S8_MuzzlePoints[muzzleIdx])
-    local spread    = Vector(math.Rand(-self.S8_Scatter, self.S8_Scatter), math.Rand(-self.S8_Scatter, self.S8_Scatter), 0)
-    local dir       = (targetPos + spread - muzzle):GetNormalized()
+    local spread    = Vector(
+        math.Rand(-self.S8_Scatter, self.S8_Scatter),
+        math.Rand(-self.S8_Scatter, self.S8_Scatter),
+        0
+    )
+    local dir = (targetPos + spread - muzzle):GetNormalized()
 
     local rocket = ents.Create("gb_s8kom_rocket")
     if IsValid(rocket) then
@@ -384,7 +430,10 @@ function ENT:FireS8(targetPos, now)
         rocket:Spawn()
         rocket:Activate()
         local phys = rocket:GetPhysicsObject()
-        if IsValid(phys) then phys:SetVelocity(dir * 1200) phys:Wake() end
+        if IsValid(phys) then
+            phys:SetVelocity(dir * 1200)
+            phys:Wake()
+        end
     end
 
     self.S8Fired  = self.S8Fired + 1
@@ -418,7 +467,10 @@ function ENT:FireVikhr(targetPos, now)
         missile:Activate()
         missile:SetVar("TargetPos", targetPos)
         local phys = missile:GetPhysicsObject()
-        if IsValid(phys) then phys:SetVelocity(dir * 600) phys:Wake() end
+        if IsValid(phys) then
+            phys:SetVelocity(dir * 600)
+            phys:Wake()
+        end
     end
 
     self.VikhrFired = self.VikhrFired + 1
