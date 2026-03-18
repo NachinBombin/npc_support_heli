@@ -1,0 +1,8 @@
+{
+    "name"         : "Bombin Support Helicopter",
+    "version"      : "1",
+    "up_date"      : "Mar 2026",
+    "author_name"  : "NachinBombin",
+    "info"         : "Autonomous KA-50 support helicopter called in by Combine NPCs",
+    "override"     : "0"
+}
