@@ -33,7 +33,6 @@ local GAU_STOP_SOUND     = "2А42_LASTSHOT"
 ENT.WeaponWindow = 8
 
 -- Muzzle points in local space (from KA-50 shared.lua muzzle attachment)
--- Adjust if needed during gameplay
 ENT.MuzzlePoints = {
     Vector(110,    0, 93),    -- 2A42 gun mount (center fuselage right)
     Vector( 57,  -84, 40),   -- left inner pylon
@@ -46,7 +45,6 @@ ENT.MuzzlePoints = {
 ENT.GAU_BurstCount       = 10
 ENT.GAU_BurstDelay       = 0.11        -- 550 rpm HE select
 ENT.GAU_Caliber          = "gredwitch_30x165mm"
-ENT.GAU_TracerColor      = "orange"
 ENT.GAU_DamageMul        = 1.0
 ENT.GAU_RadiusMul        = 0.8
 ENT.GAU_SweepHalfLength  = 300
@@ -55,14 +53,14 @@ ENT.GAU_FirstBurstTime   = 0
 ENT.GAU_SecondBurstTime  = 4
 
 -- [SLOT 2] 30mm 2A42 — Sustained mode
-ENT.GAU_Spray_Delay      = 0.11
+ENT.GAU_Spray_Delay        = 0.11
 ENT.GAU_Spray_JitterAmount = 250
 
 -- [SLOT 3] S-8 80mm rocket salvo
 ENT.S8_Delay             = 0.15
 ENT.S8_Count             = 8
 ENT.S8_Scatter           = 500
-ENT.S8_MuzzlePoints = {  -- alternating left/right inner pylons
+ENT.S8_MuzzlePoints = {
     Vector(57, -84, 40),
     Vector(57,  84, 40),
     Vector(57, -111, 40),
@@ -120,7 +118,6 @@ function ENT:Initialize()
     self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
     self:SetPos(spawnPos)
 
-    -- Bodygroups: visual spinning discs always on
     self:SetBodygroup(4, 1)
     self:SetBodygroup(3, 1)
     self:SetBodygroup(5, 2)
@@ -128,7 +125,6 @@ function ENT:Initialize()
     self:SetRenderMode(RENDERMODE_TRANSALPHA)
     self:SetColor(Color(255, 255, 255, 0))
 
-    -- NW vars for client DamageFX
     self:SetNWInt("HP",    100)
     self:SetNWInt("MaxHP", 100)
 
@@ -142,10 +138,8 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
-    -- Engine start sound
     sound.Play(ENGINE_START_SOUND, spawnPos, 90, 100, 1.0)
 
-    -- Looping engine sounds
     self.RotorLoopClose = CreateSound(self, ENGINE_LOOP_SOUND)
     if self.RotorLoopClose then
         self.RotorLoopClose:SetSoundLevel(125)
@@ -162,12 +156,10 @@ function ENT:Initialize()
         self.RotorLoopDist:Play()
     end
 
-    -- GAU sound emitter
     self.GAUSoundLoop = CreateSound(self, GAU_LOOP_SOUND)
 
     self.NextPassSound = CurTime() + math.Rand(5, 10)
 
-    -- Weapon state
     self.CurrentWeapon       = nil
     self.WeaponWindowEnd     = 0
     self.GAU_BurstTimes      = {}
@@ -217,7 +209,6 @@ function ENT:Think()
         self.PhysObj:Wake()
     end
 
-    -- Occasional distant rotor pass sound
     if ct >= self.NextPassSound then
         sound.Play(
             table.Random(PASS_SOUNDS),
@@ -226,7 +217,6 @@ function ENT:Think()
         self.NextPassSound = ct + math.Rand(6, 12)
     end
 
-    -- Fade in / out
     local age  = ct - self.SpawnTime
     local left = self.DieTime - ct
     local alpha = 255
@@ -332,7 +322,6 @@ function ENT:HandleWeaponWindow(ct)
 end
 
 function ENT:PickNewWeapon(ct)
-    -- Stop 2A42 sound if leaving a gun window
     if self.CurrentWeapon == "30mm_burst" or self.CurrentWeapon == "30mm_sustained" then
         if IsValid(self.GAUSoundLoop) and self.GAUSoundLoop:IsPlaying() then
             self.GAUSoundLoop:Stop()
@@ -463,7 +452,7 @@ function ENT:Fire30mmBullet(bulletIndex)
     gred.CreateBullet(
         self, muzzlePos, dir:Angle(), self.GAU_Caliber,
         { self }, nil, false,
-        self.GAU_TracerColor, self.GAU_DamageMul, self.GAU_RadiusMul, false
+        false, self.GAU_DamageMul, self.GAU_RadiusMul, false
     )
 
     self:SpawnMuzzleFX(muzzlePos)
@@ -501,7 +490,7 @@ function ENT:Update30mmSustained(ct)
     gred.CreateBullet(
         self, muzzlePos, dir:Angle(), self.GAU_Caliber,
         { self }, nil, false,
-        self.GAU_TracerColor, self.GAU_DamageMul, self.GAU_RadiusMul, false
+        false, self.GAU_DamageMul, self.GAU_RadiusMul, false
     )
 
     self:SpawnMuzzleFX(muzzlePos)
@@ -518,7 +507,6 @@ function ENT:UpdateS8Salvo(ct)
     self.S8_NextShot    = ct + self.S8_Delay
     self.S8_ShotsFired  = self.S8_ShotsFired + 1
 
-    -- Alternate muzzle points left/right
     local muzzleLocal = self.S8_MuzzlePoints[self.S8_MuzzleIndex]
     self.S8_MuzzleIndex = self.S8_MuzzleIndex + 1
     if self.S8_MuzzleIndex > #self.S8_MuzzlePoints then
@@ -549,13 +537,11 @@ function ENT:UpdateS8Salvo(ct)
     rocket:Spawn()
     rocket:Activate()
 
-    -- Arm and launch immediately
     rocket.Armed = true
     rocket.ShouldExplode = true
     rocket:Launch()
     rocket:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
 
-    -- Inherit heli velocity + own thrust
     local heliPhys = self:GetPhysicsObject()
     local rPhys    = rocket:GetPhysicsObject()
     if IsValid(rPhys) then
@@ -566,7 +552,6 @@ function ENT:UpdateS8Salvo(ct)
 
     self:SpawnMuzzleFX(muzzlePos)
 
-    -- No-collide rocket with heli for 0.5s
     constraint.NoCollide(rocket, self, 0, 0)
     local rocketRef = rocket
     timer.Simple(0.5, function()
@@ -617,13 +602,11 @@ function ENT:UpdateVikhr(ct)
     rocket:Spawn()
     rocket:Activate()
 
-    -- Arm immediately — no guidance for autonomous mode, straight fire
     rocket.Armed            = true
     rocket.ShouldExplode    = true
     rocket.ShouldExplodeOnImpact = true
     rocket:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
 
-    -- Trace ahead for impact point and set JDAM targeting
     local startpos = self:LocalToWorld(self:OBBCenter())
     local tr = util.TraceHull({
         start  = startpos,
@@ -633,14 +616,12 @@ function ENT:UpdateVikhr(ct)
         filter = self,
     })
 
-    -- Inherit heli velocity
     local heliPhys = self:GetPhysicsObject()
     local rPhys    = rocket:GetPhysicsObject()
     if IsValid(rPhys) and IsValid(heliPhys) then
         rPhys:AddVelocity(heliPhys:GetVelocity())
     end
 
-    -- Delayed arm + JDAM targeting (mirrors KA-50 weapon preset logic)
     constraint.NoCollide(rocket, self, 0, 0)
     local rocketRef = rocket
     timer.Simple(0.25, function()
@@ -656,7 +637,6 @@ function ENT:UpdateVikhr(ct)
         rocketRef:SetCollisionGroup(0)
     end)
 
-    -- Stack explosion effects on impact
     local oldExplode = rocket.OnExplode
     rocket.OnExplode = function(s, pos, normal)
         if oldExplode then oldExplode(s, pos, normal) end
