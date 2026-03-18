@@ -26,14 +26,16 @@ net.Receive("BombinSupportHeli_ManualSpawn", function(len, ply)
         return
     end
 
+    -- NWVars must be set BEFORE Spawn() so Initialize() can read them
+    heli:SetNWVector("BH_CenterPos",    centerPos)
+    heli:SetNWVector("BH_CallDir",      callDir)
+    heli:SetNWFloat( "BH_Lifetime",     GetConVar("npc_bombinheli_lifetime"):GetFloat())
+    heli:SetNWFloat( "BH_Speed",        GetConVar("npc_bombinheli_speed"):GetFloat())
+    heli:SetNWFloat( "BH_OrbitRadius",  GetConVar("npc_bombinheli_radius"):GetFloat())
+    heli:SetNWFloat( "BH_SkyHeightAdd", GetConVar("npc_bombinheli_height"):GetFloat())
+
     heli:SetPos(centerPos)
     heli:SetAngles(callDir:Angle())
-    heli:SetVar("CenterPos",    centerPos)
-    heli:SetVar("CallDir",      callDir)
-    heli:SetVar("Lifetime",     GetConVar("npc_bombinheli_lifetime"):GetFloat())
-    heli:SetVar("Speed",        GetConVar("npc_bombinheli_speed"):GetFloat())
-    heli:SetVar("OrbitRadius",  GetConVar("npc_bombinheli_radius"):GetFloat())
-    heli:SetVar("SkyHeightAdd", GetConVar("npc_bombinheli_height"):GetFloat())
     heli:Spawn()
     heli:Activate()
 
