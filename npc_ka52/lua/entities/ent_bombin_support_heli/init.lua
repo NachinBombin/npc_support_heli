@@ -441,15 +441,20 @@ function ENT:Fire30mmBullet(bulletIndex)
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
 
-    gred.CreateBullet({
-        Attacker  = self,
-        Inflictor = self,
-        Pos       = muzzlePos,
-        Dir       = dir,
-        Caliber   = self.GAU_Caliber,
-        DamageMul = self.GAU_DamageMul,
-        RadiusMul = self.GAU_RadiusMul,
-    })
+    -- gred.CreateBullet(ply, pos, ang, cal, filter, fusetime, NoBullet, tracer, dmg, radius, IsShared)
+    gred.CreateBullet(
+        self,
+        muzzlePos,
+        dir:Angle(),
+        self.GAU_Caliber,
+        { self },
+        nil,
+        false,
+        false,
+        nil,
+        nil,
+        false
+    )
 
     self:SpawnMuzzleFX(muzzlePos)
 end
@@ -483,15 +488,20 @@ function ENT:Update30mmSustained(ct)
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
 
-    gred.CreateBullet({
-        Attacker  = self,
-        Inflictor = self,
-        Pos       = muzzlePos,
-        Dir       = dir,
-        Caliber   = self.GAU_Caliber,
-        DamageMul = self.GAU_DamageMul,
-        RadiusMul = self.GAU_RadiusMul,
-    })
+    -- gred.CreateBullet(ply, pos, ang, cal, filter, fusetime, NoBullet, tracer, dmg, radius, IsShared)
+    gred.CreateBullet(
+        self,
+        muzzlePos,
+        dir:Angle(),
+        self.GAU_Caliber,
+        { self },
+        nil,
+        false,
+        false,
+        nil,
+        nil,
+        false
+    )
 
     self:SpawnMuzzleFX(muzzlePos)
 end
