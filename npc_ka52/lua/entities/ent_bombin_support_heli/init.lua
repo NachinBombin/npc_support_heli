@@ -25,6 +25,14 @@ local ENGINE_DIST_SOUND  = "^lvs_darklord/rotors/rotor_loop_dist.wav"
 local GAU_LOOP_SOUND     = "2А42_1_LOOP"
 local GAU_STOP_SOUND     = "2А42_LASTSHOT"
 
+local GAU_IMPACT_SOUNDS = {
+    "gredwitch/impacts/bullet_impact_dirt_01.wav",
+    "gredwitch/impacts/bullet_impact_dirt_02.wav",
+    "gredwitch/impacts/bullet_impact_dirt_03.wav",
+    "gredwitch/impacts/bullet_impact_concrete_01.wav",
+    "gredwitch/impacts/bullet_impact_concrete_02.wav",
+}
+
 -- ============================================================
 -- WEAPON TUNING
 -- ============================================================
@@ -39,20 +47,20 @@ ENT.MuzzlePoints = {
     Vector( 87,  111, 37),
 }
 
--- [SLOT 1] 30mm 2A42 — Burst mode
+-- [SLOT 1] 20mm — Burst mode
 ENT.GAU_BurstCount      = 10
-ENT.GAU_BurstDelay      = 0.11
-ENT.GAU_Caliber         = "gredwitch_30x165mm"
-ENT.GAU_DamageMul       = 1.0
-ENT.GAU_RadiusMul       = 0.8
+ENT.GAU_BurstDelay      = 0.1
+ENT.GAU_Caliber         = "wac_base_20mm"
+ENT.GAU_DamageMul       = 0.5
+ENT.GAU_RadiusMul       = 0.5
 ENT.GAU_SweepHalfLength = 300
-ENT.GAU_JitterAmount    = 150
+ENT.GAU_JitterAmount    = 300   -- Large jitter = bad aim
 ENT.GAU_FirstBurstTime  = 0
 ENT.GAU_SecondBurstTime = 4
+ENT.GAU_HEI_Interval    = 6    -- Every 6th bullet spawns HEI shell
 
--- [SLOT 2] 30mm 2A42 — Sustained mode
-ENT.GAU_Spray_Delay        = 0.11
-ENT.GAU_Spray_JitterAmount = 250
+-- [SLOT 2] 20mm — Sustained mode
+ENT.GAU_Spray_Delay     = 0.1  -- 0.1s fire rate
 
 -- [SLOT 3] S-8 80mm rocket salvo
 ENT.S8_Delay        = 0.15
@@ -167,6 +175,7 @@ function ENT:Initialize()
     self.GAU_SweepMuzzlePos = nil
     self.NextShotTime40     = 0
     self.NextShotTimeSpray  = 0
+    self.SprayBulletCount   = 0
     self.S8_ShotsFired      = 0
     self.S8_NextShot        = 0
     self.S8_MuzzleIndex     = 1
@@ -217,7 +226,7 @@ function ENT:Think()
     local age  = ct - self.SpawnTime
     local left = self.DieTime - ct
     local alpha = 255
-    if age  < self.FadeDuration then
+    if age < self.FadeDuration then
         alpha = math.Clamp(255 * (age  / self.FadeDuration), 0, 255)
     elseif left < self.FadeDuration then
         alpha = math.Clamp(255 * (left / self.FadeDuration), 0, 255)
@@ -343,13 +352,8 @@ function ENT:PickNewWeapon(ct)
         if IsValid(self.GAUSoundLoop) then self.GAUSoundLoop:Play() end
 
     elseif self.CurrentWeapon == "30mm_sustained" then
-        self.NextShotTimeSpray  = ct
-        local tgt = self:GetTargetGroundPos()
-        local sweepDir = Vector(math.Rand(-1,1), math.Rand(-1,1), 0)
-        if sweepDir:LengthSqr() < 0.01 then sweepDir = Vector(1,0,0) end
-        sweepDir:Normalize()
-        self.GAU_SweepStartPos  = tgt - sweepDir * self.GAU_SweepHalfLength
-        self.GAU_SweepEndPos    = tgt + sweepDir * self.GAU_SweepHalfLength
+        self.NextShotTimeSpray = ct
+        self.SprayBulletCount  = 0
         self.GAU_SweepMuzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
         if IsValid(self.GAUSoundLoop) then self.GAUSoundLoop:Play() end
 
@@ -366,7 +370,65 @@ function ENT:PickNewWeapon(ct)
 end
 
 -- ============================================================
--- SLOT 1 — 30mm 2A42 BURST
+-- SHARED MACHINEGUN BULLET FIRE  (plane GAU logic, 20mm caliber)
+-- ============================================================
+
+function ENT:Fire20mmBulletAt(impactPos, bulletIndex)
+    if not HasGred() then return end
+
+    local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+    local dir       = impactPos - muzzlePos
+    if dir:LengthSqr() < 1 then return end
+    dir:Normalize()
+
+    -- Exact same signature as the working plane
+    gred.CreateBullet(
+        self, muzzlePos, dir:Angle(), self.GAU_Caliber,
+        { self }, nil, false,
+        nil,                    -- tracer nil = suppressed
+        self.GAU_DamageMul, self.GAU_RadiusMul, false
+    )
+
+    -- Impact FX (same as plane)
+    local ed1 = EffectData()
+    ed1:SetOrigin(impactPos)
+    ed1:SetScale(1.5) ed1:SetMagnitude(1.5) ed1:SetRadius(40)
+    util.Effect("gred_ground_impact", ed1, true, true)
+
+    local ed2 = EffectData()
+    ed2:SetOrigin(impactPos)
+    ed2:SetScale(1) ed2:SetMagnitude(1) ed2:SetRadius(30)
+    util.Effect("Sparks", ed2, true, true)
+
+    sound.Play(table.Random(GAU_IMPACT_SOUNDS), impactPos, 75, math.random(95, 105), 0.8)
+
+    -- HEI shell every 6th bullet (same as plane)
+    if bulletIndex % self.GAU_HEI_Interval == 0 then
+        local shell = gred.CreateShell(
+            impactPos + Vector(0, 0, 30),
+            Angle(90, 0, 0),
+            self, { self },
+            20, "HE", 80, 0.1, nil,
+            60, nil, 0.05
+        )
+        if IsValid(shell) then
+            if shell.Arm then shell:Arm() end
+            if shell.SetArmed then shell:SetArmed(true) end
+            shell.Armed         = true
+            shell.ShouldExplode = true
+            local phys = shell:GetPhysicsObject()
+            if IsValid(phys) then
+                phys:EnableGravity(true)
+                phys:SetVelocity(Vector(0, 0, -8000))
+            end
+        end
+    end
+
+    self:SpawnMuzzleFX(muzzlePos)
+end
+
+-- ============================================================
+-- SLOT 1 — 20mm BURST
 -- ============================================================
 
 function ENT:Update30mmBurstsSchedule(ct)
@@ -392,12 +454,6 @@ function ENT:StartGAUBurst()
     local targetPos = self:GetTargetGroundPos()
     local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
-    local sweepDir = Vector(math.Rand(-1,1), math.Rand(-1,1), 0)
-    if sweepDir:LengthSqr() < 0.01 then sweepDir = Vector(1,0,0) end
-    sweepDir:Normalize()
-
-    self.GAU_SweepStartPos  = targetPos - sweepDir * self.GAU_SweepHalfLength
-    self.GAU_SweepEndPos    = targetPos + sweepDir * self.GAU_SweepHalfLength
     self.GAU_SweepMuzzlePos = muzzlePos
 
     table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime() })
@@ -425,42 +481,19 @@ end
 
 function ENT:Fire30mmBullet(bulletIndex)
     if not HasGred() then return end
-    if not self.GAU_SweepStartPos then return end
 
-    local fraction    = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
-    local baseImpact  = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
-    local jitter      = Vector(
-        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
-        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
+    -- Always bad aim: large random offset from target
+    local finalImpact = self:GetTargetGroundPos() + Vector(
+        math.Rand(-300, 300),
+        math.Rand(-300, 300),
         0
     )
-    local finalImpact = baseImpact + jitter
-    local muzzlePos   = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
-    local dir = finalImpact - muzzlePos
-    if dir:LengthSqr() < 1 then return end
-    dir:Normalize()
-
-    -- gred.CreateBullet(ply, pos, ang, cal, filter, fusetime, NoBullet, tracer, dmg, radius, IsShared)
-    gred.CreateBullet(
-        self,
-        muzzlePos,
-        dir:Angle(),
-        self.GAU_Caliber,
-        { self },
-        nil,
-        false,
-        false,
-        nil,
-        nil,
-        false
-    )
-
-    self:SpawnMuzzleFX(muzzlePos)
+    self:Fire20mmBulletAt(finalImpact, bulletIndex)
 end
 
 -- ============================================================
--- SLOT 2 — 30mm 2A42 SUSTAINED
+-- SLOT 2 — 20mm SUSTAINED
 -- ============================================================
 
 function ENT:Update30mmSustained(ct)
@@ -474,36 +507,17 @@ function ENT:Update30mmSustained(ct)
         return
     end
 
-    self.NextShotTimeSpray = ct + self.GAU_Spray_Delay
+    self.NextShotTimeSpray = ct + 0.1
+    self.SprayBulletCount  = self.SprayBulletCount + 1
 
-    local targetPos   = self:GetTargetGroundPos()
-    local finalImpact = targetPos + Vector(
-        math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
-        math.Rand(-self.GAU_Spray_JitterAmount, self.GAU_Spray_JitterAmount),
+    -- Always bad aim: large random offset from target
+    local finalImpact = self:GetTargetGroundPos() + Vector(
+        math.Rand(-300, 300),
+        math.Rand(-300, 300),
         0
     )
-    local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
-    local dir = finalImpact - muzzlePos
-    if dir:LengthSqr() < 1 then return end
-    dir:Normalize()
-
-    -- gred.CreateBullet(ply, pos, ang, cal, filter, fusetime, NoBullet, tracer, dmg, radius, IsShared)
-    gred.CreateBullet(
-        self,
-        muzzlePos,
-        dir:Angle(),
-        self.GAU_Caliber,
-        { self },
-        nil,
-        false,
-        false,
-        nil,
-        nil,
-        false
-    )
-
-    self:SpawnMuzzleFX(muzzlePos)
+    self:Fire20mmBulletAt(finalImpact, self.SprayBulletCount)
 end
 
 -- ============================================================
@@ -593,11 +607,11 @@ function ENT:UpdateVikhr(ct)
     rocket:SetPos(muzzlePos)
     rocket:SetAngles(dir:Angle())
     rocket:SetOwner(self)
-    rocket.IsOnPlane            = true
+    rocket.IsOnPlane             = true
     rocket:Spawn()
     rocket:Activate()
-    rocket.Armed                = true
-    rocket.ShouldExplode        = true
+    rocket.Armed                 = true
+    rocket.ShouldExplode         = true
     rocket.ShouldExplodeOnImpact = true
     rocket:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
 
