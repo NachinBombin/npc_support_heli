@@ -54,18 +54,18 @@ ENT.GAU_Caliber         = "wac_base_20mm"
 ENT.GAU_DamageMul       = 0.5
 ENT.GAU_RadiusMul       = 0.5
 ENT.GAU_SweepHalfLength = 300
-ENT.GAU_JitterAmount    = 300   -- Large jitter = bad aim
+ENT.GAU_JitterAmount    = 400   -- Large jitter = bad aim
 ENT.GAU_FirstBurstTime  = 0
 ENT.GAU_SecondBurstTime = 4
-ENT.GAU_HEI_Interval    = 6    -- Every 6th bullet spawns HEI shell
+ENT.GAU_HEI_Interval    = 20    -- Every 6th bullet spawns HEI shell
 
 -- [SLOT 2] 20mm — Sustained mode
 ENT.GAU_Spray_Delay     = 0.1  -- 0.1s fire rate
 
 -- [SLOT 3] S-8 80mm rocket salvo
 ENT.S8_Delay        = 0.15
-ENT.S8_Count        = 8
-ENT.S8_Scatter      = 500
+ENT.S8_Count        = 22
+ENT.S8_Scatter      = 1200
 ENT.S8_MuzzlePoints = {
     Vector(57,  -84, 40),
     Vector(57,   84, 40),
@@ -134,8 +134,21 @@ function ENT:Initialize()
     self:SetNWInt("MaxHP", 100)
 
     local ang = self.CallDir:Angle()
-    self:SetAngles(Angle(0, ang.y - 90, 0))
+    -- Subtract 70 instead of 90: nose starts 20° inward from pure tangent.
+    -- The original accumulator orbit logic then maintains this naturally.
+    self:SetAngles(Angle(0, ang.y + 70, 0))
     self.ang = self:GetAngles()
+
+    -- ---- LAYER 1: Wind jitter ----
+    self.JitterPhase     = math.Rand(0, math.pi * 2)
+    self.JitterAmplitude = 12
+
+    -- ---- LAYER 2: Altitude drift ----
+    self.AltDriftCurrent  = self.sky
+    self.AltDriftTarget   = self.sky
+    self.AltDriftNextPick = CurTime() + math.Rand(8, 20)
+    self.AltDriftRange    = 700
+    self.AltDriftLerp     = 0.003
 
     self.PhysObj = self:GetPhysicsObject()
     if IsValid(self.PhysObj) then
@@ -248,13 +261,28 @@ function ENT:PhysicsUpdate(phys)
     if CurTime() >= self.DieTime then self:Remove() return end
 
     local pos = self:GetPos()
-    self:SetPos(Vector(pos.x, pos.y, self.sky))
+
+    -- ---- LAYER 2: Altitude drift ----
+    if CurTime() >= self.AltDriftNextPick then
+        self.AltDriftTarget   = self.sky + math.Rand(-self.AltDriftRange, self.AltDriftRange)
+        self.AltDriftNextPick = CurTime() + math.Rand(10, 25)
+        self:Debug("Alt drift target: " .. math.Round(self.AltDriftTarget))
+    end
+    self.AltDriftCurrent = Lerp(self.AltDriftLerp, self.AltDriftCurrent, self.AltDriftTarget)
+
+    -- ---- LAYER 1: Wind jitter ----
+    self.JitterPhase = self.JitterPhase + 0.04
+    local jitter     = math.sin(self.JitterPhase) * self.JitterAmplitude
+
+    local liveAlt = self.AltDriftCurrent + jitter
+    self:SetPos(Vector(pos.x, pos.y, liveAlt))
     self:SetAngles(self.ang)
 
     if IsValid(phys) then
         phys:SetVelocity(self:GetForward() * self.Speed)
     end
 
+    -- ---- ORIGINAL orbit turn logic, verbatim ----
     local flatPos    = Vector(pos.x, pos.y, 0)
     local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
     local dist       = flatPos:Distance(flatCenter)
@@ -381,15 +409,13 @@ function ENT:Fire20mmBulletAt(impactPos, bulletIndex)
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
 
-    -- Exact same signature as the working plane
     gred.CreateBullet(
         self, muzzlePos, dir:Angle(), self.GAU_Caliber,
         { self }, nil, false,
-        nil,                    -- tracer nil = suppressed
+        nil,
         self.GAU_DamageMul, self.GAU_RadiusMul, false
     )
 
-    -- Impact FX (same as plane)
     local ed1 = EffectData()
     ed1:SetOrigin(impactPos)
     ed1:SetScale(1.5) ed1:SetMagnitude(1.5) ed1:SetRadius(40)
@@ -402,7 +428,6 @@ function ENT:Fire20mmBulletAt(impactPos, bulletIndex)
 
     sound.Play(table.Random(GAU_IMPACT_SOUNDS), impactPos, 75, math.random(95, 105), 0.8)
 
-    -- HEI shell every 6th bullet (same as plane)
     if bulletIndex % self.GAU_HEI_Interval == 0 then
         local shell = gred.CreateShell(
             impactPos + Vector(0, 0, 30),
@@ -482,7 +507,6 @@ end
 function ENT:Fire30mmBullet(bulletIndex)
     if not HasGred() then return end
 
-    -- Always bad aim: large random offset from target
     local finalImpact = self:GetTargetGroundPos() + Vector(
         math.Rand(-300, 300),
         math.Rand(-300, 300),
@@ -510,7 +534,6 @@ function ENT:Update30mmSustained(ct)
     self.NextShotTimeSpray = ct + 0.1
     self.SprayBulletCount  = self.SprayBulletCount + 1
 
-    -- Always bad aim: large random offset from target
     local finalImpact = self:GetTargetGroundPos() + Vector(
         math.Rand(-300, 300),
         math.Rand(-300, 300),
