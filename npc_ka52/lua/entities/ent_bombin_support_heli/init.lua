@@ -29,55 +29,52 @@ local GAU_STOP_SOUND     = "2А42_LASTSHOT"
 -- WEAPON TUNING
 -- ============================================================
 
--- Shared weapon window
 ENT.WeaponWindow = 8
 
--- Muzzle points in local space (from KA-50 shared.lua muzzle attachment)
 ENT.MuzzlePoints = {
-    Vector(110,    0, 93),    -- 2A42 gun mount (center fuselage right)
-    Vector( 57,  -84, 40),   -- left inner pylon
-    Vector( 57,   84, 40),   -- right inner pylon
-    Vector( 87, -111, 37),   -- left outer pylon
-    Vector( 87,  111, 37),   -- right outer pylon
+    Vector(110,    0, 93),
+    Vector( 57,  -84, 40),
+    Vector( 57,   84, 40),
+    Vector( 87, -111, 37),
+    Vector( 87,  111, 37),
 }
 
 -- [SLOT 1] 30mm 2A42 — Burst mode
-ENT.GAU_BurstCount       = 10
-ENT.GAU_BurstDelay       = 0.11        -- 550 rpm HE select
-ENT.GAU_Caliber          = "gredwitch_30x165mm"
-ENT.GAU_DamageMul        = 1.0
-ENT.GAU_RadiusMul        = 0.8
-ENT.GAU_SweepHalfLength  = 300
-ENT.GAU_JitterAmount     = 150
-ENT.GAU_FirstBurstTime   = 0
-ENT.GAU_SecondBurstTime  = 4
+ENT.GAU_BurstCount      = 10
+ENT.GAU_BurstDelay      = 0.11
+ENT.GAU_Caliber         = "gredwitch_30x165mm"
+ENT.GAU_DamageMul       = 1.0
+ENT.GAU_RadiusMul       = 0.8
+ENT.GAU_SweepHalfLength = 300
+ENT.GAU_JitterAmount    = 150
+ENT.GAU_FirstBurstTime  = 0
+ENT.GAU_SecondBurstTime = 4
 
 -- [SLOT 2] 30mm 2A42 — Sustained mode
 ENT.GAU_Spray_Delay        = 0.11
 ENT.GAU_Spray_JitterAmount = 250
 
 -- [SLOT 3] S-8 80mm rocket salvo
-ENT.S8_Delay             = 0.15
-ENT.S8_Count             = 8
-ENT.S8_Scatter           = 500
+ENT.S8_Delay        = 0.15
+ENT.S8_Count        = 8
+ENT.S8_Scatter      = 500
 ENT.S8_MuzzlePoints = {
-    Vector(57, -84, 40),
-    Vector(57,  84, 40),
+    Vector(57,  -84, 40),
+    Vector(57,   84, 40),
     Vector(57, -111, 40),
     Vector(57,  111, 40),
 }
 
 -- [SLOT 4] 9K121 Vikhr ATGM
-ENT.VIKHR_Delay          = 3.0
-ENT.VIKHR_Count          = 2
-ENT.VIKHR_Scatter        = 80
+ENT.VIKHR_Delay        = 3.0
+ENT.VIKHR_Count        = 2
+ENT.VIKHR_Scatter      = 80
 ENT.VIKHR_MuzzlePoints = {
     Vector(87, -111, 37),
     Vector(87,  111, 37),
 }
 
--- Flight
-ENT.FadeDuration         = 2.0
+ENT.FadeDuration = 2.0
 
 -- ============================================================
 -- INITIALIZE
@@ -160,23 +157,23 @@ function ENT:Initialize()
 
     self.NextPassSound = CurTime() + math.Rand(5, 10)
 
-    self.CurrentWeapon       = nil
-    self.WeaponWindowEnd     = 0
-    self.GAU_BurstTimes      = {}
-    self.GAU_BurstsFired     = 0
-    self.GAU_ActiveBursts    = {}
-    self.GAU_SweepStartPos   = nil
-    self.GAU_SweepEndPos     = nil
-    self.GAU_SweepMuzzlePos  = nil
-    self.NextShotTime40      = 0
-    self.NextShotTimeSpray   = 0
-    self.S8_ShotsFired       = 0
-    self.S8_NextShot         = 0
-    self.S8_MuzzleIndex      = 1
-    self.VIKHR_ShotsFired    = 0
-    self.VIKHR_NextShot      = 0
-    self.VIKHR_MuzzleIndex   = 1
-    self.MuzzleIndexGlobal   = 1
+    self.CurrentWeapon      = nil
+    self.WeaponWindowEnd    = 0
+    self.GAU_BurstTimes     = {}
+    self.GAU_BurstsFired    = 0
+    self.GAU_ActiveBursts   = {}
+    self.GAU_SweepStartPos  = nil
+    self.GAU_SweepEndPos    = nil
+    self.GAU_SweepMuzzlePos = nil
+    self.NextShotTime40     = 0
+    self.NextShotTimeSpray  = 0
+    self.S8_ShotsFired      = 0
+    self.S8_NextShot        = 0
+    self.S8_MuzzleIndex     = 1
+    self.VIKHR_ShotsFired   = 0
+    self.VIKHR_NextShot     = 0
+    self.VIKHR_MuzzleIndex  = 1
+    self.MuzzleIndexGlobal  = 1
 
     if not HasGred() then
         self:Debug("WARNING: Gredwitch Base not detected — weapons disabled")
@@ -343,9 +340,7 @@ function ENT:PickNewWeapon(ct)
         self.GAU_BurstTimes   = { ct + self.GAU_FirstBurstTime, ct + self.GAU_SecondBurstTime }
         self.GAU_BurstsFired  = 0
         self.GAU_ActiveBursts = {}
-        if IsValid(self.GAUSoundLoop) then
-            self.GAUSoundLoop:Play()
-        end
+        if IsValid(self.GAUSoundLoop) then self.GAUSoundLoop:Play() end
 
     elseif self.CurrentWeapon == "30mm_sustained" then
         self.NextShotTimeSpray  = ct
@@ -356,9 +351,7 @@ function ENT:PickNewWeapon(ct)
         self.GAU_SweepStartPos  = tgt - sweepDir * self.GAU_SweepHalfLength
         self.GAU_SweepEndPos    = tgt + sweepDir * self.GAU_SweepHalfLength
         self.GAU_SweepMuzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
-        if IsValid(self.GAUSoundLoop) then
-            self.GAUSoundLoop:Play()
-        end
+        if IsValid(self.GAUSoundLoop) then self.GAUSoundLoop:Play() end
 
     elseif self.CurrentWeapon == "s8_salvo" then
         self.S8_ShotsFired  = 0
@@ -408,7 +401,6 @@ function ENT:StartGAUBurst()
     self.GAU_SweepMuzzlePos = muzzlePos
 
     table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime() })
-
     self:SpawnMuzzleFX(muzzlePos)
 end
 
@@ -435,9 +427,9 @@ function ENT:Fire30mmBullet(bulletIndex)
     if not HasGred() then return end
     if not self.GAU_SweepStartPos then return end
 
-    local fraction   = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
-    local baseImpact = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
-    local jitter     = Vector(
+    local fraction    = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
+    local baseImpact  = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
+    local jitter      = Vector(
         math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
         math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
         0
@@ -449,11 +441,15 @@ function ENT:Fire30mmBullet(bulletIndex)
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
 
-    gred.CreateBullet(
-        self, muzzlePos, dir:Angle(), self.GAU_Caliber,
-        { self }, nil, false,
-        false, self.GAU_DamageMul, self.GAU_RadiusMul, false
-    )
+    gred.CreateBullet({
+        Attacker  = self,
+        Inflictor = self,
+        Pos       = muzzlePos,
+        Dir       = dir,
+        Caliber   = self.GAU_Caliber,
+        DamageMul = self.GAU_DamageMul,
+        RadiusMul = self.GAU_RadiusMul,
+    })
 
     self:SpawnMuzzleFX(muzzlePos)
 end
@@ -487,11 +483,15 @@ function ENT:Update30mmSustained(ct)
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
 
-    gred.CreateBullet(
-        self, muzzlePos, dir:Angle(), self.GAU_Caliber,
-        { self }, nil, false,
-        false, self.GAU_DamageMul, self.GAU_RadiusMul, false
-    )
+    gred.CreateBullet({
+        Attacker  = self,
+        Inflictor = self,
+        Pos       = muzzlePos,
+        Dir       = dir,
+        Caliber   = self.GAU_Caliber,
+        DamageMul = self.GAU_DamageMul,
+        RadiusMul = self.GAU_RadiusMul,
+    })
 
     self:SpawnMuzzleFX(muzzlePos)
 end
@@ -504,17 +504,14 @@ function ENT:UpdateS8Salvo(ct)
     if self.S8_ShotsFired >= self.S8_Count then return end
     if ct < self.S8_NextShot then return end
 
-    self.S8_NextShot    = ct + self.S8_Delay
-    self.S8_ShotsFired  = self.S8_ShotsFired + 1
+    self.S8_NextShot   = ct + self.S8_Delay
+    self.S8_ShotsFired = self.S8_ShotsFired + 1
 
     local muzzleLocal = self.S8_MuzzlePoints[self.S8_MuzzleIndex]
     self.S8_MuzzleIndex = self.S8_MuzzleIndex + 1
-    if self.S8_MuzzleIndex > #self.S8_MuzzlePoints then
-        self.S8_MuzzleIndex = 1
-    end
+    if self.S8_MuzzleIndex > #self.S8_MuzzlePoints then self.S8_MuzzleIndex = 1 end
 
     local muzzlePos = self:GetMuzzleWorldPos(muzzleLocal)
-
     local targetPos = self:GetTargetGroundPos() + Vector(
         math.Rand(-self.S8_Scatter, self.S8_Scatter),
         math.Rand(-self.S8_Scatter, self.S8_Scatter),
@@ -525,10 +522,7 @@ function ENT:UpdateS8Salvo(ct)
     dir:Normalize()
 
     local rocket = ents.Create("gb_s8kom_rocket")
-    if not IsValid(rocket) then
-        self:Debug("gb_s8kom_rocket failed to create")
-        return
-    end
+    if not IsValid(rocket) then self:Debug("gb_s8kom_rocket failed") return end
 
     rocket:SetPos(muzzlePos)
     rocket:SetAngles(dir:Angle())
@@ -536,18 +530,15 @@ function ENT:UpdateS8Salvo(ct)
     rocket.IsOnPlane = true
     rocket:Spawn()
     rocket:Activate()
-
-    rocket.Armed = true
+    rocket.Armed         = true
     rocket.ShouldExplode = true
     rocket:Launch()
     rocket:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
 
     local heliPhys = self:GetPhysicsObject()
     local rPhys    = rocket:GetPhysicsObject()
-    if IsValid(rPhys) then
-        if IsValid(heliPhys) then
-            rPhys:AddVelocity(heliPhys:GetVelocity())
-        end
+    if IsValid(rPhys) and IsValid(heliPhys) then
+        rPhys:AddVelocity(heliPhys:GetVelocity())
     end
 
     self:SpawnMuzzleFX(muzzlePos)
@@ -574,12 +565,9 @@ function ENT:UpdateVikhr(ct)
 
     local muzzleLocal = self.VIKHR_MuzzlePoints[self.VIKHR_MuzzleIndex]
     self.VIKHR_MuzzleIndex = self.VIKHR_MuzzleIndex + 1
-    if self.VIKHR_MuzzleIndex > #self.VIKHR_MuzzlePoints then
-        self.VIKHR_MuzzleIndex = 1
-    end
+    if self.VIKHR_MuzzleIndex > #self.VIKHR_MuzzlePoints then self.VIKHR_MuzzleIndex = 1 end
 
     local muzzlePos = self:GetMuzzleWorldPos(muzzleLocal)
-
     local targetPos = self:GetTargetGroundPos() + Vector(
         math.Rand(-self.VIKHR_Scatter, self.VIKHR_Scatter),
         math.Rand(-self.VIKHR_Scatter, self.VIKHR_Scatter),
@@ -590,20 +578,16 @@ function ENT:UpdateVikhr(ct)
     dir:Normalize()
 
     local rocket = ents.Create("gb_9k121_rocket")
-    if not IsValid(rocket) then
-        self:Debug("gb_9k121_rocket failed to create")
-        return
-    end
+    if not IsValid(rocket) then self:Debug("gb_9k121_rocket failed") return end
 
     rocket:SetPos(muzzlePos)
     rocket:SetAngles(dir:Angle())
     rocket:SetOwner(self)
-    rocket.IsOnPlane = true
+    rocket.IsOnPlane            = true
     rocket:Spawn()
     rocket:Activate()
-
-    rocket.Armed            = true
-    rocket.ShouldExplode    = true
+    rocket.Armed                = true
+    rocket.ShouldExplode        = true
     rocket.ShouldExplodeOnImpact = true
     rocket:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
 
@@ -632,7 +616,7 @@ function ENT:UpdateVikhr(ct)
             rocketRef.targetOffset = IsValid(tr.Entity) and tr.Entity:WorldToLocal(tr.HitPos) or tr.HitPos
             rocketRef.dropping     = true
         end
-        rocketRef.Armed  = true
+        rocketRef.Armed = true
         rocketRef:Launch()
         rocketRef:SetCollisionGroup(0)
     end)
@@ -641,20 +625,14 @@ function ENT:UpdateVikhr(ct)
     rocket.OnExplode = function(s, pos, normal)
         if oldExplode then oldExplode(s, pos, normal) end
         local hitPos = pos or s:GetPos()
-
         local ed1 = EffectData()
-        ed1:SetOrigin(hitPos)
-        ed1:SetScale(4) ed1:SetMagnitude(4) ed1:SetRadius(400)
+        ed1:SetOrigin(hitPos) ed1:SetScale(4) ed1:SetMagnitude(4) ed1:SetRadius(400)
         util.Effect("500lb_air", ed1, true, true)
-
         local ed2 = EffectData()
-        ed2:SetOrigin(hitPos + Vector(0,0,60))
-        ed2:SetScale(3) ed2:SetMagnitude(3) ed2:SetRadius(300)
+        ed2:SetOrigin(hitPos + Vector(0,0,60)) ed2:SetScale(3) ed2:SetMagnitude(3) ed2:SetRadius(300)
         util.Effect("500lb_air", ed2, true, true)
-
         local ed3 = EffectData()
-        ed3:SetOrigin(hitPos)
-        ed3:SetScale(4) ed3:SetMagnitude(4) ed3:SetRadius(400)
+        ed3:SetOrigin(hitPos) ed3:SetScale(4) ed3:SetMagnitude(4) ed3:SetRadius(400)
         util.Effect("HelicopterMegaBomb", ed3, true, true)
     end
 
