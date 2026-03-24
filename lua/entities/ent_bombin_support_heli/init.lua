@@ -117,7 +117,7 @@ ENT.FadeDuration = 2.0
 -- HP TUNING
 -- ============================================================
 
-ENT.MaxHP = 600
+ENT.MaxHP = 3100
 
 -- ============================================================
 -- INITIALIZE
@@ -184,6 +184,11 @@ function ENT:Initialize()
     self.AltDriftRange    = 700
     self.AltDriftLerp     = 0.003
 
+    -- ---- Roll & Pitch state ----
+    self.SmoothedRoll  = 0
+    self.SmoothedPitch = 0
+    self.PrevYaw       = self:GetAngles().y
+
     self.PhysObj = self:GetPhysicsObject()
     if IsValid(self.PhysObj) then
         self.PhysObj:Wake()
@@ -229,7 +234,6 @@ function ENT:Initialize()
     self.VIKHR_MuzzleIndex  = 1
     self.MuzzleIndexGlobal  = 1
 
-    -- Destroyed flag
     self.IsDestroyed = false
 
     if not HasGred() then
@@ -245,8 +249,6 @@ end
 
 function ENT:OnTakeDamage(dmginfo)
     if self.IsDestroyed then return end
-
-    -- World collisions must never kill it
     if dmginfo:IsDamageType(DMG_CRUSH) then return end
 
     local hp = self:GetNWInt("HP", ENT.MaxHP)
@@ -360,29 +362,67 @@ function ENT:PhysicsUpdate(phys)
     local jitter     = math.sin(self.JitterPhase) * self.JitterAmplitude
 
     local liveAlt = self.AltDriftCurrent + jitter
-    self:SetPos(Vector(pos.x, pos.y, liveAlt))
-    self:SetAngles(self.ang)
-
-    if IsValid(phys) then
-        phys:SetVelocity(self:GetForward() * self.Speed)
-    end
 
     -- ---- Orbit turn logic ----
     local flatPos    = Vector(pos.x, pos.y, 0)
     local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
     local dist       = flatPos:Distance(flatCenter)
 
+    local orbitYaw = 0
     if dist > self.OrbitRadius and (self.TurnDelay or 0) < CurTime() then
-        self.ang       = self.ang + Angle(0, 0.1, 0)
+        orbitYaw       = 0.1
         self.TurnDelay = CurTime() + 0.02
-        self.VisualRoll = Lerp(0.05, self.VisualRoll, 8)
-    else
-        self.VisualRoll = Lerp(0.03, self.VisualRoll, 0)
     end
 
-    local tr = util.QuickTrace(self:GetPos(), self:GetForward() * 3000, self)
-    if tr.HitSky then
-        self.ang = self.ang + Angle(0, 0.3, 0)
+    local trSkyCheck = util.QuickTrace(self:GetPos(), self:GetForward() * 3000, self)
+    local skyYaw = 0
+    if trSkyCheck.HitSky then
+        skyYaw = 0.3
+    end
+
+    local totalYawDelta = orbitYaw + skyYaw
+    self.ang = self.ang + Angle(0, totalYawDelta, 0)
+
+    -- ============================================================
+    -- ROLL — yaw-rate driven, same as TB-2
+    -- ============================================================
+    local currentYaw  = self.ang.y
+    local rawYawDelta = math.NormalizeAngle(currentYaw - (self.PrevYaw or currentYaw))
+    self.PrevYaw      = currentYaw
+
+    -- Helicopters roll shallower than fixed-wing; ±20° max
+    local targetRoll  = math.Clamp(rawYawDelta * -20, -20, 20)
+    local rollLerp    = rawYawDelta ~= 0 and 0.12 or 0.04
+    self.SmoothedRoll = Lerp(rollLerp, self.SmoothedRoll, targetRoll)
+
+    -- ============================================================
+    -- PITCH — forward-speed driven
+    -- A helicopter tilts its disc forward to accelerate.
+    -- We measure how fast the heli is actually moving along its
+    -- own forward axis and map that to a nose-down angle.
+    --
+    -- targetPitch: negative = nose down (GMod pitch convention)
+    --   speed 0   →  0° pitch  (hovering level)
+    --   speed 250 → -12° pitch (full cruise, light nose-down)
+    -- Max clamp ±15° so it never looks absurd during orbit kicks.
+    -- ============================================================
+    local vel          = IsValid(phys) and phys:GetVelocity() or Vector(0,0,0)
+    local forwardSpeed = vel:Dot(self:GetForward())  -- units/s along nose axis
+    local speedRatio   = math.Clamp(forwardSpeed / self.Speed, 0, 1)
+    local targetPitch  = math.Clamp(speedRatio * 12, -15, 15)
+    local pitchLerp    = 0.04  -- slow, smooth — helis don't snap pitch
+    self.SmoothedPitch = Lerp(pitchLerp, self.SmoothedPitch, targetPitch)
+
+    -- Write all three axes. Yaw comes from self.ang.y (already set above).
+    -- Pitch and roll are purely visual — they never feed back into steering.
+    self.ang.p = self.SmoothedPitch
+    self.ang.r = self.SmoothedRoll
+
+    self:SetPos(Vector(pos.x, pos.y, liveAlt))
+    self:SetAngles(self.ang)
+
+    if IsValid(phys) then
+        phys:SetVelocity(self:GetForward() * self.Speed)
     end
 
     if not self:IsInWorld() then
@@ -518,7 +558,7 @@ function ENT:Fire20mmBulletAt(impactPos, bulletIndex)
         if IsValid(shell) then
             if shell.Arm       then shell:Arm()          end
             if shell.SetArmed  then shell:SetArmed(true) end
-            shell.Armed        = true
+            shell.Armed         = true
             shell.ShouldExplode = true
             local phys = shell:GetPhysicsObject()
             if IsValid(phys) then
@@ -729,7 +769,7 @@ function ENT:UpdateVikhr(ct)
     local startpos = self:LocalToWorld(self:OBBCenter())
     local tr = util.TraceHull({
         start  = startpos,
-        endpos  = startpos + dir * 500000,
+        endpos = startpos + dir * 500000,
         mins   = Vector(-25, -25, -25),
         maxs   = Vector( 25,  25,  25),
         filter = self,
