@@ -161,6 +161,7 @@ function ENT:Initialize()
     self.SmoothedRoll  = 0
     self.SmoothedPitch = 0
     self.PrevYaw       = self:GetAngles().y
+    self.LastPos       = spawnPos
 
     self.PhysObj = self:GetPhysicsObject()
     if IsValid(self.PhysObj) then
@@ -237,6 +238,10 @@ function ENT:DestroyHeli()
     self.IsDestroyed = true
 
     local pos = self:GetPos()
+    self.LastPos = pos
+
+    if self.RotorLoopClose then self.RotorLoopClose:Stop() end
+    if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
 
     local ed1 = EffectData()
     ed1:SetOrigin(pos)
@@ -255,6 +260,7 @@ function ENT:DestroyHeli()
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 140, 90, 1.0)
     sound.Play("weapon_AWP.Single",               pos, 145, 60, 1.0)
+    sound.Play("lvs_darklord/mi_engine/mi24_engine_stop_exterior.wav", pos, 90, 100, 1.0)
 
     util.BlastDamage(self, self, pos, 300, 120)
     self:Remove()
@@ -279,6 +285,7 @@ function ENT:Think()
     end
 
     local ct = CurTime()
+    self.LastPos = self:GetPos()
     if ct >= self.DieTime then self:Remove() return end
 
     if not IsValid(self.PhysObj) then
@@ -319,6 +326,7 @@ function ENT:PhysicsUpdate(phys)
     if CurTime() >= self.DieTime then self:Remove() return end
 
     local pos = self:GetPos()
+    self.LastPos = pos
 
     if CurTime() >= self.AltDriftNextPick then
         self.AltDriftTarget   = self.sky + math.Rand(-self.AltDriftRange, self.AltDriftRange)
@@ -835,7 +843,16 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    if self.RotorLoopClose then self.RotorLoopClose:Stop() end
-    if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
-    sound.Play("lvs_darklord/mi_engine/mi24_engine_stop_exterior.wav", self:GetPos(), 90, 100, 1.0)
+    if self.RotorLoopClose then
+        self.RotorLoopClose:Stop()
+        self.RotorLoopClose = nil
+    end
+    if self.RotorLoopDist then
+        self.RotorLoopDist:Stop()
+        self.RotorLoopDist = nil
+    end
+
+    if not self.IsDestroyed then
+        sound.Play("lvs_darklord/mi_engine/mi24_engine_stop_exterior.wav", self.LastPos or self:GetPos(), 90, 100, 1.0)
+    end
 end
