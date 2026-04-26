@@ -52,9 +52,13 @@ local GAU_IMPACT_SOUNDS = {
 
 local GAU_CAL_ID = 3
 
-ENT.WeaponWindow = 8
+-- ============================================================
+-- TUNING  (locals — safe under ogfunc, ENT global is nil at file-exec time)
+-- ============================================================
 
-ENT.MuzzlePoints = {
+local CFG_WeaponWindow = 8
+
+local CFG_MuzzlePoints = {
     Vector(110, 0, 93),
     Vector( 57, -84, 40),
     Vector( 57,  84, 40),
@@ -62,36 +66,36 @@ ENT.MuzzlePoints = {
     Vector( 87,  111, 37),
 }
 
-ENT.GAU_BurstCount      = 10
-ENT.GAU_BurstDelay      = 0.1
-ENT.GAU_BulletDamage    = 40
-ENT.GAU_SweepHalfLength = 300
-ENT.GAU_JitterAmount    = 400
-ENT.GAU_FirstBurstTime  = 0
-ENT.GAU_SecondBurstTime = 4
-ENT.GAU_HEI_Interval    = 20
-ENT.GAU_Spray_Delay     = 0.1
+local CFG_GAU_BurstCount      = 10
+local CFG_GAU_BurstDelay      = 0.1
+local CFG_GAU_BulletDamage    = 40
+local CFG_GAU_SweepHalfLength = 300
+local CFG_GAU_JitterAmount    = 400
+local CFG_GAU_FirstBurstTime  = 0
+local CFG_GAU_SecondBurstTime = 4
+local CFG_GAU_HEI_Interval    = 20
+local CFG_GAU_Spray_Delay     = 0.1
 
-ENT.S8_Delay   = 0.15
-ENT.S8_Count   = 22
-ENT.S8_Scatter = 1200
-ENT.S8_MuzzlePoints = {
+local CFG_S8_Delay   = 0.15
+local CFG_S8_Count   = 22
+local CFG_S8_Scatter = 1200
+local CFG_S8_MuzzlePoints = {
     Vector(57, -84,  40),
     Vector(57,  84,  40),
     Vector(57, -111, 40),
     Vector(57,  111, 40),
 }
 
-ENT.VIKHR_Delay   = 3.0
-ENT.VIKHR_Count   = 2
-ENT.VIKHR_Scatter = 80
-ENT.VIKHR_MuzzlePoints = {
+local CFG_VIKHR_Delay   = 3.0
+local CFG_VIKHR_Count   = 2
+local CFG_VIKHR_Scatter = 80
+local CFG_VIKHR_MuzzlePoints = {
     Vector(87, -111, 37),
     Vector(87,  111, 37),
 }
 
-ENT.FadeDuration = 2.0
-ENT.MaxHP        = 3100
+local CFG_FadeDuration = 2.0
+local CFG_MaxHP        = 3100
 
 -- ============================================================
 -- NET STRING
@@ -130,7 +134,32 @@ function ENT:Initialize()
     self.OrbitRadius  = self:GetVar( "OrbitRadius",  2500 )
     self.SkyHeightAdd = self:GetVar( "SkyHeightAdd", 2500 )
 
-    self.MaxHP = ENT.MaxHP or 3100
+    -- Copy all config locals into self so methods can use self.* freely
+    self.MaxHP        = CFG_MaxHP
+    self.FadeDuration = CFG_FadeDuration
+    self.WeaponWindow = CFG_WeaponWindow
+
+    self.MuzzlePoints = CFG_MuzzlePoints
+
+    self.GAU_BurstCount      = CFG_GAU_BurstCount
+    self.GAU_BurstDelay      = CFG_GAU_BurstDelay
+    self.GAU_BulletDamage    = CFG_GAU_BulletDamage
+    self.GAU_SweepHalfLength = CFG_GAU_SweepHalfLength
+    self.GAU_JitterAmount    = CFG_GAU_JitterAmount
+    self.GAU_FirstBurstTime  = CFG_GAU_FirstBurstTime
+    self.GAU_SecondBurstTime = CFG_GAU_SecondBurstTime
+    self.GAU_HEI_Interval    = CFG_GAU_HEI_Interval
+    self.GAU_Spray_Delay     = CFG_GAU_Spray_Delay
+
+    self.S8_Delay        = CFG_S8_Delay
+    self.S8_Count        = CFG_S8_Count
+    self.S8_Scatter      = CFG_S8_Scatter
+    self.S8_MuzzlePoints = CFG_S8_MuzzlePoints
+
+    self.VIKHR_Delay        = CFG_VIKHR_Delay
+    self.VIKHR_Count        = CFG_VIKHR_Count
+    self.VIKHR_Scatter      = CFG_VIKHR_Scatter
+    self.VIKHR_MuzzlePoints = CFG_VIKHR_MuzzlePoints
 
     if self.CallDir:LengthSqr() <= 1 then self.CallDir = Vector(1,0,0) end
     self.CallDir.z = 0
