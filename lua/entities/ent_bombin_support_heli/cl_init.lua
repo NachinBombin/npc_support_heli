@@ -1,4 +1,5 @@
 include("shared.lua")
+include("cl_trailsystem.lua")
 
 -- ============================================================
 -- ROTOR
@@ -158,6 +159,9 @@ net.Receive( "bombin_plane_damage_tier", function()
     local entIndex = net.ReadUInt( 16 )
     local tier     = net.ReadUInt( 2 )
     local ent      = Entity( entIndex )
+
+    -- Trail system tier update
+    HeliTrailSystem_SetTier( entIndex, tier )
 
     local state = HeliStates[entIndex]
     if not state then
