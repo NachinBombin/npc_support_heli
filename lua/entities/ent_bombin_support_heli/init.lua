@@ -321,8 +321,6 @@ function ENT:StartTumble()
     local gnd = self:FindGround( self:GetPos() )
     if gnd ~= -1 then self.TumbleGroundZ = gnd end
 
-    -- Use flightYaw (true travel direction). self.ang.y = flightYaw + MODEL_YAW_OFFSET
-    -- so GetForward() points opposite to travel. Reconstruct real travel vector.
     local travelFwd = Angle(0, self.flightYaw, 0):Forward()
     local speed     = self.Speed or 250
 
@@ -489,8 +487,6 @@ function ENT:PhysicsUpdate( phys )
         local pos    = self:GetPos()
         local newPos = pos + self.TumbleVelocity * dt
 
-        -- Tumble angles spin freely — MODEL_YAW_OFFSET is NOT applied here.
-        -- The offset only matters during normal flight to align the mesh.
         local av   = self.TumbleAngVelocity
         local newP = self.ang.p + av.x * dt
         local newY = self.ang.y + av.y * dt
@@ -531,9 +527,13 @@ function ENT:PhysicsUpdate( phys )
         self.TurnDelay = CurTime() + 0.02
     end
 
-    -- Sky-wall avoidance
-    if util.QuickTrace( self:GetPos(), self:GetForward() * 3000, self ).HitSky then
+    -- Sky-wall avoidance: trace along the real travel direction, NOT GetForward().
+    -- GetForward() is offset by MODEL_YAW_OFFSET so it would always bias the yaw
+    -- the same direction, causing the predetermined-left orbit.
+    local travelFwd = Angle(0, self.flightYaw, 0):Forward()
+    if util.QuickTrace( self:GetPos(), travelFwd * 3000, self ).HitSky then
         self.flightYaw = self.flightYaw + 0.3
+        travelFwd = Angle(0, self.flightYaw, 0):Forward()
     end
 
     -- Roll / pitch smoothing
@@ -544,7 +544,7 @@ function ENT:PhysicsUpdate( phys )
     self.SmoothedRoll  = Lerp( rawYawDelta ~= 0 and 0.12 or 0.04, self.SmoothedRoll, targetRoll )
 
     local vel          = IsValid(phys) and phys:GetVelocity() or Vector(0,0,0)
-    local forwardSpeed = vel:Dot( self:GetForward() )
+    local forwardSpeed = vel:Dot( travelFwd )
     local speedRatio   = math.Clamp( forwardSpeed / self.Speed, 0, 1 )
     self.SmoothedPitch = Lerp( 0.04, self.SmoothedPitch, math.Clamp(speedRatio * 12, -15, 15) )
 
@@ -553,7 +553,7 @@ function ENT:PhysicsUpdate( phys )
 
     self:SetPos( Vector(pos.x, pos.y, liveAlt) )
     self:SetAngles( self.ang )
-    if IsValid(phys) then phys:SetVelocity( self:GetForward() * self.Speed ) end
+    if IsValid(phys) then phys:SetVelocity( travelFwd * self.Speed ) end
 
     if not self:IsInWorld() then
         self:Debug( "Out of world — rescue warp" )
