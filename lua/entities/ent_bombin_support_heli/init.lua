@@ -3,21 +3,17 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 -- Permanent yaw correction so the KA-50 mesh faces the direction of travel.
--- Applied unconditionally every tick: self.ang.y = flightYaw + MODEL_YAW_OFFSET.
 local MODEL_YAW_OFFSET = 70
 
 local function HasGred()
     return gred and gred.CreateBullet and gred.CreateShell
 end
 
-local PASS_SOUNDS = {
-    "lvs_darklord/rotors/rotor_loop_close.wav",
-    "lvs_darklord/rotors/rotor_loop_dist.wav",
-}
+-- ============================================================
+-- SOUNDS
+-- ============================================================
 
-local ENGINE_START_SOUND = "lvs_darklord/mi_engine/mi24_engine_start_exterior.wav"
-local ENGINE_LOOP_SOUND  = "^lvs_darklord/rotors/rotor_loop_close.wav"
-local ENGINE_DIST_SOUND  = "^lvs_darklord/rotors/rotor_loop_dist.wav"
+local ENGINE_LOOP_SOUND = "lyutyy/engine_high.wav"
 
 local SOUNDS_30MM = { "30mm.wav", "30mm2.wav", "30mm3.wav" }
 local SOUNDS_S8_IGNITE   = { "S8.wav",   "S82.wav",   "S83.wav",   "S84.wav"   }
@@ -153,7 +149,6 @@ function ENT:Initialize()
     self.DieTime   = CurTime() + self.Lifetime
     self.SpawnTime = CurTime()
 
-    -- ---- Orbit setup (same algorithm as AN-71) ----
     self.OrbitDirection = (math.random(2) == 1) and 1 or -1
 
     local outward = VectorRand()
@@ -230,25 +225,15 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
-    sound.Play(ENGINE_START_SOUND, spawnPos, 90, 100, 1.0)
-
-    self.RotorLoopClose = CreateSound(self, ENGINE_LOOP_SOUND)
-    if self.RotorLoopClose then
-        self.RotorLoopClose:SetSoundLevel(125)
-        self.RotorLoopClose:ChangePitch(100, 0)
-        self.RotorLoopClose:ChangeVolume(1.0, 0.5)
-        self.RotorLoopClose:Play()
+    -- Single engine loop
+    self.EngineLoop = CreateSound(self, ENGINE_LOOP_SOUND)
+    if self.EngineLoop then
+        self.EngineLoop:SetSoundLevel(125)
+        self.EngineLoop:ChangePitch(100, 0)
+        self.EngineLoop:ChangeVolume(1.0, 0.5)
+        self.EngineLoop:Play()
     end
 
-    self.RotorLoopDist = CreateSound(self, ENGINE_DIST_SOUND)
-    if self.RotorLoopDist then
-        self.RotorLoopDist:SetSoundLevel(125)
-        self.RotorLoopDist:ChangePitch(100, 0)
-        self.RotorLoopDist:ChangeVolume(1.0, 0.5)
-        self.RotorLoopDist:Play()
-    end
-
-    self.NextPassSound      = CurTime() + math.Rand(5, 10)
     self.CurrentWeapon      = nil
     self.WeaponWindowEnd    = 0
     self.GAU_BurstTimes     = {}
@@ -272,6 +257,22 @@ function ENT:Initialize()
     end
 
     self:Debug("Spawned at " .. tostring(spawnPos) .. " OrbitDirection=" .. self.OrbitDirection)
+end
+
+-- ============================================================
+-- SOUND STOP HELPER
+-- ============================================================
+
+function ENT:StopEngineSound()
+    if not self.EngineLoop then return end
+    local snd = self.EngineLoop
+    self.EngineLoop = nil  -- nil first so OnRemove won't double-stop
+    local FADE = 1.5
+    snd:ChangeVolume(0, FADE)
+    snd:ChangePitch(55, FADE + 0.5)
+    timer.Simple(FADE + 0.2, function()
+        if snd then snd:Stop() end
+    end)
 end
 
 -- ============================================================
@@ -345,8 +346,8 @@ end
 function ENT:DestroyHeli()
     if self.IsDestroyed then return end
     self.IsDestroyed = true
-    if self.RotorLoopClose then self.RotorLoopClose:Stop() end
-    if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
+    -- Fade + hard-stop the engine sound; nil the handle before the timer
+    self:StopEngineSound()
     self:StartTumble()
     timer.Simple(12, function() if IsValid(self) then self:CrashExplode() end end)
 end
@@ -385,11 +386,6 @@ function ENT:Think()
 
     if not IsValid(self.PhysObj) then self.PhysObj = self:GetPhysicsObject() end
     if IsValid(self.PhysObj) and self.PhysObj:IsAsleep() then self.PhysObj:Wake() end
-
-    if self.NextPassSound and ct >= self.NextPassSound then
-        sound.Play(table.Random(PASS_SOUNDS), self:GetPos(), 100, math.random(96,104), 1.0)
-        self.NextPassSound = ct + math.Rand(6, 12)
-    end
 
     local age  = ct - self.SpawnTime
     local left = self.DieTime - ct
@@ -440,7 +436,6 @@ function ENT:PhysicsUpdate(phys)
     local pos = self:GetPos()
     local dt  = engine.TickInterval()
 
-    -- Altitude drift
     if CurTime() >= self.AltDriftNextPick then
         self.AltDriftTarget   = self.sky + math.Rand(-self.AltDriftRange, self.AltDriftRange)
         self.AltDriftNextPick = CurTime() + math.Rand(8, 20)
@@ -449,7 +444,6 @@ function ENT:PhysicsUpdate(phys)
     self.JitterPhase     = self.JitterPhase + 0.04
     local liveAlt = self.AltDriftCurrent + math.sin(self.JitterPhase) * self.JitterAmplitude
 
-    -- ---- Orbit steering (same algorithm as AN-71) ----
     local flatPos    = Vector(pos.x, pos.y, 0)
     local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
     local toCenter   = flatCenter - flatPos
@@ -470,7 +464,6 @@ function ENT:PhysicsUpdate(phys)
 
     local desiredDir = tangentDir + radialDir * radialError * self.RadialGain
 
-    -- Sky-wall avoidance on real travel direction
     local fwdProbe  = Angle(0, self.flightYaw, 0):Forward()
     local probeDist = math.max(1200, self.Speed * 6)
     local trFwd   = util.QuickTrace(pos, fwdProbe * probeDist, self)
@@ -496,7 +489,6 @@ function ENT:PhysicsUpdate(phys)
     local maxStep    = self.MaxTurnRate * dt
     self.flightYaw   = self.flightYaw + math.Clamp(yawDiff, -maxStep, maxStep)
 
-    -- Roll / pitch smoothing
     local rawYawDelta  = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
     self.PrevYaw       = self.flightYaw
 
@@ -507,10 +499,8 @@ function ENT:PhysicsUpdate(phys)
     local climbDelta   = math.Clamp((liveAlt - pos.z) / 450, -1, 1)
     self.SmoothedPitch = Lerp(0.04, self.SmoothedPitch, math.Clamp(climbDelta * 8, -8, 8))
 
-    -- MODEL_YAW_OFFSET applied unconditionally here
     self.ang = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
 
-    -- Single position integration — no phys:SetVelocity to avoid double-move
     local newPos = pos + fwdDir * self.Speed * dt
     newPos.z = Lerp(0.08, pos.z, liveAlt)
 
@@ -862,7 +852,10 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    if self.RotorLoopClose then self.RotorLoopClose:Stop() end
-    if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
-    sound.Play("lvs_darklord/mi_engine/mi24_engine_stop_exterior.wav", self:GetPos(), 90, 100, 1.0)
+    -- EngineLoop is nilled by StopEngineSound() on death path;
+    -- this only fires for lifetime expiry / external Remove().
+    if self.EngineLoop then
+        self.EngineLoop:Stop()
+        self.EngineLoop = nil
+    end
 end
