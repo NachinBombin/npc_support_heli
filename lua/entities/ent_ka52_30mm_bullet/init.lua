@@ -30,9 +30,6 @@ local FIRE_SOUNDS = {
 }
 for _, s in ipairs(FIRE_SOUNDS) do util.PrecacheSound(s) end
 
-local BULLET_MODEL = "models/weapons/bt_762.mdl"
-util.PrecacheModel(BULLET_MODEL)
-
 local GAU_CAL_ID = 3
 
 -- ============================================================
@@ -40,13 +37,14 @@ local GAU_CAL_ID = 3
 -- ============================================================
 
 function ENT:Initialize()
-    self:SetModel(BULLET_MODEL)
+    -- ENT.Model in shared.lua tells the engine which model to load.
+    -- DO NOT call self:Spawn() here -- it is called externally by the heli
+    -- and calling it again inside Initialize() causes a recursive crash.
     self:SetMoveType(MOVETYPE_NONE)
     self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_NONE)
     self:DrawShadow(false)
-    self:Spawn()
-    self:SetModelScale(3, 0)  -- scale up so it's clearly visible
+    self:SetModelScale(3, 0)
 
     self.bul_position    = self:GetPos()
     self.bul_direction   = self:GetAngles():Forward()
@@ -64,7 +62,6 @@ function ENT:Initialize()
     local muzzlePos = self.MuzzlePos or self:GetPos()
     sound.Play(table.Random(FIRE_SOUNDS), muzzlePos, 125, math.random(117, 125), 1.0)
 
-    -- send spawn notice to client for dlight
     net.Start("ka52_bullet_tracer")
         net.WriteVector(self.bul_position)
         net.WriteVector(self.bul_direction)
