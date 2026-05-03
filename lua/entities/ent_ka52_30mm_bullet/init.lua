@@ -51,14 +51,8 @@ function ENT:Initialize()
     self.bul_firer       = self.Firer
     self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
 
-    -- Per-bullet fire sound
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
 
-    -- Orange glowing sprite trail (serverside call is valid)
-    util.SpriteTrail(self, 0, Color(255, 160, 40, 200), false, 6, 1, 0.18, 1/(6+1)*0.5, "effects/softglow")
-
-    -- Tell clients: spawn position (for muzzle flash), direction, tracer flag, entity index
-    -- cl_init.lua will fire MuzzleEffect + DynamicLight from this message
     local mpos = self.MuzzlePos or self:GetPos()
     net.Start("ka52_bullet_tracer")
         net.WriteVector(mpos)
@@ -95,12 +89,6 @@ function ENT:Think()
     self.bul_position = tr.HitPos
     self:SetPos(self.bul_position)
     self:SetAngles(self.bul_dirAngle)
-
-    net.Start("ka52_bullet_pos")
-        net.WriteUInt(self:EntIndex(), 16)
-        net.WriteVector(tr.HitPos)
-        net.WriteVector(self.bul_direction)
-    net.Broadcast()
 
     if tr.Hit or tr.HitSky then
         self:OnImpact(tr) self:Remove() return
