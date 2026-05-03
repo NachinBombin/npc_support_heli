@@ -28,12 +28,10 @@ local FIRE_SOUNDS = {
     "npc_ka52/weapons/30mm2.wav",
     "npc_ka52/weapons/30mm3.wav",
 }
-for _, s in ipairs(FIRE_SOUNDS)  do util.PrecacheSound(s) end
+for _, s in ipairs(FIRE_SOUNDS) do util.PrecacheSound(s) end
 util.PrecacheModel(BULLET_MODEL)
 
 function ENT:Initialize()
-    -- Explicit SetModel is REQUIRED serverside for base_anim entities.
-    -- ENT.Model is a clientside-only hint and does nothing on the server.
     self:SetModel(BULLET_MODEL)
     self:SetModelScale(3, 0)
     self:SetMoveType(MOVETYPE_NONE)
@@ -47,15 +45,41 @@ function ENT:Initialize()
     self.bul_fallSpeed   = FALL_SPEED
     self.bul_dirAngle    = self.bul_direction:Angle()
     self.bul_initVel     = MUZZLE_VELOCITY
-    self.bul_damage      = self.BulletDmg    or BLAST_DAMAGE
-    self.bul_radius      = self.BulletRad    or BLAST_RADIUS
-    self.bul_index       = self.BulletIndex  or 1
+    self.bul_damage      = self.BulletDmg   or BLAST_DAMAGE
+    self.bul_radius      = self.BulletRad   or BLAST_RADIUS
+    self.bul_index       = self.BulletIndex or 1
     self.bul_firer       = self.Firer
-    self.bul_heiInterval = self.HEIInterval  or HEI_INTERVAL
+    self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
 
+    -- Per-bullet fire sound (not a loop)
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
 
-    -- net messages still sent for future tracer work / protocol compat
+    -- Orange glowing sprite trail
+    self:SetNWBool("ka52_trail", true)   -- flag for cl_init if needed
+    util.SpriteTrail(self, 0, Color(255, 160, 40, 200), false, 6, 1, 0.18, 1 / (6 + 1) * 0.5, "effects/softglow")
+
+    -- Muzzle flash at spawn origin — vanilla GMod effect
+    local mpos = self.MuzzlePos or self:GetPos()
+    local med = EffectData()
+    med:SetOrigin(mpos)
+    med:SetAngles(self:GetAngles())
+    med:SetScale(2.5)
+    med:SetMagnitude(2.5)
+    util.Effect("MuzzleEffect", med, true, true)
+
+    -- Muzzle light flash — brief bright light at the gun barrel
+    local mld = DynamicLight(self:EntIndex() + 4096)
+    if mld then
+        mld.Pos        = mpos
+        mld.r          = 255
+        mld.g          = 200
+        mld.b          = 80
+        mld.Brightness = 10
+        mld.Size       = 200
+        mld.Decay      = 8000   -- fades in ~0.025s
+        mld.DieTime    = CurTime() + 0.025
+    end
+
     net.Start("ka52_bullet_tracer")
         net.WriteVector(self.bul_position)
         net.WriteVector(self.bul_direction)
@@ -74,7 +98,6 @@ function ENT:Think()
         self:Remove() return
     end
 
-    -- gravity droop
     self.bul_dirAngle.p = math.Approach(
         math.NormalizeAngle(self.bul_dirAngle.p), 90, self.bul_fallSpeed * dt)
     self.bul_direction = self.bul_dirAngle:Forward()
