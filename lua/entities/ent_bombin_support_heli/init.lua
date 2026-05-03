@@ -2,7 +2,6 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
--- Permanent yaw correction so the KA-50 mesh faces the direction of travel.
 local MODEL_YAW_OFFSET = 0
 
 local function HasGred()
@@ -37,7 +36,7 @@ local CFG_MuzzlePoints = {
 }
 
 local CFG_GAU_BurstCount      = 30
-local CFG_GAU_BurstDelay      = 0.14   -- 0.14s between bullets in burst mode
+local CFG_GAU_BurstDelay      = 0.14
 local CFG_GAU_BulletDamage    = 40
 local CFG_GAU_BlastRadius     = 80
 local CFG_GAU_SweepHalfLength = 300
@@ -45,7 +44,7 @@ local CFG_GAU_JitterAmount    = 400
 local CFG_GAU_FirstBurstTime  = 0
 local CFG_GAU_SecondBurstTime = 4
 local CFG_GAU_HEI_Interval    = 90
-local CFG_GAU_Spray_Delay     = 0.31   -- 0.31s between bullets in sustained mode
+local CFG_GAU_Spray_Delay     = 0.31
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -218,7 +217,6 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
-    -- Single engine loop
     self.EngineLoop = CreateSound(self, ENGINE_LOOP_SOUND)
     if self.EngineLoop then
         self.EngineLoop:SetSoundLevel(120)
@@ -234,7 +232,6 @@ function ENT:Initialize()
     self.GAU_ActiveBursts   = {}
     self.GAU_SweepStartPos  = nil
     self.GAU_SweepEndPos    = nil
-    self.GAU_SweepMuzzlePos = nil
     self.NextShotTimeSpray  = 0
     self.SprayBulletCount   = 0
     self.S8_ShotsFired      = 0
@@ -244,9 +241,7 @@ function ENT:Initialize()
     self.VIKHR_NextShot     = 0
     self.VIKHR_MuzzleIndex  = 1
     self.MuzzleIndexGlobal  = 1
-
-    -- tracer counter: every 3rd bullet is a tracer (CW2.0 behavior)
-    self.TracerCounter = 0
+    self.TracerCounter      = 0
 
     if not HasGred() then
         self:Debug("WARNING: Gredwitch Base not detected — HEI rounds disabled")
@@ -406,7 +401,6 @@ end
 function ENT:PhysicsUpdate(phys)
     if not self.DieTime or not self.sky then return end
 
-    -- ---- TUMBLE PATH ----
     if self.IsTumbling then
         if self.TumbleCrashed then return end
 
@@ -425,8 +419,6 @@ function ENT:PhysicsUpdate(phys)
     end
 
     if CurTime() >= self.DieTime then self:Remove() return end
-
-    -- ---- NORMAL FLIGHT PATH ----
 
     local pos = self:GetPos()
     local dt  = engine.TickInterval()
@@ -550,14 +542,20 @@ function ENT:GetTargetGroundPos()
     return tr.HitPos
 end
 
+-- Returns the current live world position of a local muzzle point.
+-- Called fresh every bullet — never cached across a burst.
 function ENT:GetMuzzleWorldPos(localPoint)
     return self:LocalToWorld(localPoint)
 end
 
+-- Vanilla muzzle flash — no gred dependency
 function ENT:SpawnMuzzleFX(worldPos)
     local ed = EffectData()
-    ed:SetOrigin(worldPos) ed:SetAngles(self:GetAngles()) ed:SetEntity(self)
-    util.Effect("gred_particle_aircraft_muzzle", ed, true, true)
+    ed:SetOrigin(worldPos)
+    ed:SetAngles(self:GetAngles())
+    ed:SetScale(2)
+    ed:SetMagnitude(2)
+    util.Effect("MuzzleEffect", ed, true, true)
 end
 
 -- ============================================================
@@ -592,9 +590,8 @@ function ENT:PickNewWeapon(ct)
         self.GAU_BurstsFired  = 0
         self.GAU_ActiveBursts = {}
     elseif self.CurrentWeapon == "30mm_sustained" then
-        self.NextShotTimeSpray  = ct
-        self.SprayBulletCount   = 0
-        self.GAU_SweepMuzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+        self.NextShotTimeSpray = ct
+        self.SprayBulletCount  = 0
     elseif self.CurrentWeapon == "s8_salvo" then
         self.S8_ShotsFired  = 0
         self.S8_NextShot    = ct + 0.2
@@ -608,22 +605,12 @@ end
 
 -- ============================================================
 -- PHYSICAL BULLET SPAWNER
--- Replaces the old hitscan Fire30mmBulletAt.
--- Creates an ent_ka52_30mm_bullet that flies from muzzle to
--- impact with full CW2.0 physics: gravity drop, velocity decay,
--- tracer beam, blast damage, HEI interval.
 -- ============================================================
 
 function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
-    -- tracer every 3rd round  (CW2.0: tracerRoundCounter >= 3)
     self.TracerCounter = self.TracerCounter + 1
-    local isTracer = false
-    if self.TracerCounter >= 3 then
-        isTracer = true
-        self.TracerCounter = 0
-    end
+    if self.TracerCounter >= 3 then self.TracerCounter = 0 end
 
-    -- direction: muzzle -> impact target (top-down column point)
     local dir = impactPos - muzzlePos
     if dir:LengthSqr() < 1 then return end
     dir:Normalize()
@@ -631,12 +618,10 @@ function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
     local bul = ents.Create("ent_ka52_30mm_bullet")
     if not IsValid(bul) then return end
 
-    -- set fields before Spawn() so Initialize() can read them
     bul:SetPos(muzzlePos)
     bul:SetAngles(dir:Angle())
     bul.Firer       = self
     bul.MuzzlePos   = muzzlePos
-    bul.IsTracer    = isTracer
     bul.BulletDmg   = self.GAU_BulletDamage
     bul.BulletRad   = self.GAU_BlastRadius
     bul.BulletIndex = bulletIndex
@@ -664,18 +649,16 @@ end
 
 function ENT:StartGAUBurst()
     local targetPos = self:GetTargetGroundPos()
-    local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
     local sweepDir = Vector(math.Rand(-1, 1), math.Rand(-1, 1), 0)
     if sweepDir:LengthSqr() < 0.01 then sweepDir = Vector(1, 0, 0) end
     sweepDir:Normalize()
 
-    self.GAU_SweepStartPos  = targetPos - sweepDir * self.GAU_SweepHalfLength
-    self.GAU_SweepEndPos    = targetPos + sweepDir * self.GAU_SweepHalfLength
-    self.GAU_SweepMuzzlePos = muzzlePos
+    -- Store sweep ground target only — muzzle is computed live per bullet
+    self.GAU_SweepStartPos = targetPos - sweepDir * self.GAU_SweepHalfLength
+    self.GAU_SweepEndPos   = targetPos + sweepDir * self.GAU_SweepHalfLength
 
     table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime() })
-    self:SpawnMuzzleFX(muzzlePos)
 end
 
 function ENT:UpdateActiveGAUBursts(ct)
@@ -686,7 +669,7 @@ function ENT:UpdateActiveGAUBursts(ct)
             table.remove(self.GAU_ActiveBursts, idx)
         elseif ct >= burst.nextTime then
             burst.bulletsFired = burst.bulletsFired + 1
-            burst.nextTime     = ct + self.GAU_BurstDelay   -- 0.14s
+            burst.nextTime     = ct + self.GAU_BurstDelay
             self:FireSingleGAUBullet(burst.bulletsFired)
             if burst.bulletsFired >= self.GAU_BurstCount then
                 table.remove(self.GAU_ActiveBursts, idx)
@@ -696,11 +679,12 @@ function ENT:UpdateActiveGAUBursts(ct)
 end
 
 function ENT:FireSingleGAUBullet(bulletIndex)
-    local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+    -- Muzzle computed LIVE from heli's current position every single bullet
+    local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
     local impactPos
     if not self.GAU_SweepStartPos then
-        impactPos = self:GetTargetGroundPos() + Vector(math.Rand(-300, 300), math.Rand(-300, 300), 0)
+        impactPos = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
     else
         local fraction = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
         local base     = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
@@ -722,11 +706,13 @@ end
 function ENT:Update30mmSustained(ct)
     if ct < self.NextShotTimeSpray then return end
     if ct >= self.WeaponWindowEnd  then return end
-    self.GAU_SweepMuzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
-    self.NextShotTimeSpray  = ct + self.GAU_Spray_Delay   -- 0.31s
-    self.SprayBulletCount   = self.SprayBulletCount + 1
+
+    -- Muzzle computed LIVE from heli's current position
+    local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+    self.NextShotTimeSpray = ct + self.GAU_Spray_Delay
+    self.SprayBulletCount  = self.SprayBulletCount + 1
     local finalImpact = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
-    self:SpawnPhysicalBullet(self.GAU_SweepMuzzlePos, finalImpact, self.SprayBulletCount)
+    self:SpawnPhysicalBullet(muzzlePos, finalImpact, self.SprayBulletCount)
 end
 
 -- ============================================================
