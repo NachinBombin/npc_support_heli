@@ -15,7 +15,11 @@ end
 
 local ENGINE_LOOP_SOUND = "lyutyy/engine_high.wav"
 
-local SOUNDS_30MM = { "30mm.wav", "30mm2.wav", "30mm3.wav" }
+local SOUNDS_30MM = {
+    "npc_ka52/weapons/30mm.wav",
+    "npc_ka52/weapons/30mm2.wav",
+    "npc_ka52/weapons/30mm3.wav",
+}
 local SOUNDS_S8_IGNITE   = { "S8.wav",   "S82.wav",   "S83.wav",   "S84.wav"   }
 local SOUNDS_ATGM_IGNITE = { "ATGM.wav", "ATGM2.wav", "ATGM3.wav", "ATGM4.wav" }
 local SOUNDS_LAUNCH      = { "launch1.wav", "launch2.wav" }
@@ -28,6 +32,9 @@ local GAU_IMPACT_SOUNDS = {
     "gredwitch/impacts/bullet_impact_concrete_01.wav",
     "gredwitch/impacts/bullet_impact_concrete_02.wav",
 }
+
+-- Precache all 30mm fire sounds so the engine has them ready
+for _, s in ipairs(SOUNDS_30MM) do util.PrecacheSound(s) end
 
 local GAU_CAL_ID = 3
 
@@ -46,7 +53,7 @@ local CFG_MuzzlePoints = {
 }
 
 local CFG_GAU_BurstCount      = 10
-local CFG_GAU_BurstDelay      = 0.1
+local CFG_GAU_BurstDelay      = 0.14   -- 0.14s between bullets in burst mode
 local CFG_GAU_BulletDamage    = 40
 local CFG_GAU_BlastRadius     = 80
 local CFG_GAU_SweepHalfLength = 300
@@ -54,7 +61,7 @@ local CFG_GAU_JitterAmount    = 400
 local CFG_GAU_FirstBurstTime  = 0
 local CFG_GAU_SecondBurstTime = 4
 local CFG_GAU_HEI_Interval    = 20
-local CFG_GAU_Spray_Delay     = 0.1
+local CFG_GAU_Spray_Delay     = 0.31   -- 0.31s between bullets in sustained mode
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -268,7 +275,7 @@ end
 function ENT:StopEngineSound()
     if not self.EngineLoop then return end
     local snd = self.EngineLoop
-    self.EngineLoop = nil  -- nil first so OnRemove won't double-stop
+    self.EngineLoop = nil
     local FADE = 1.5
     snd:ChangeVolume(0, FADE)
     snd:ChangePitch(55, FADE + 0.5)
@@ -614,21 +621,17 @@ end
 
 -- ============================================================
 -- SHARED 30mm IMPACT FX + HEI SPAWNER
--- (ported from AC-130 GAU logic)
 -- ============================================================
 
 function ENT:SpawnGAUImpactFX(groundPos)
-    -- gred ground crater
     local ed1 = EffectData()
     ed1:SetOrigin(groundPos) ed1:SetScale(1.5) ed1:SetMagnitude(1.5) ed1:SetRadius(40)
     util.Effect("gred_ground_impact", ed1, true, true)
 
-    -- tight spark puff (AC-130 values: scale=0.5, radius=4)
     local ed2 = EffectData()
     ed2:SetOrigin(groundPos) ed2:SetScale(0.5) ed2:SetMagnitude(0.5) ed2:SetRadius(4)
     util.Effect("Sparks", ed2, true, true)
 
-    -- gred caliber shell impact decal
     net.Start("gred_net_createimpact")
         net.WriteVector(groundPos)
         net.WriteAngle(Angle(0, 0, 0))
@@ -636,7 +639,6 @@ function ENT:SpawnGAUImpactFX(groundPos)
         net.WriteUInt(GAU_CAL_ID, 4)
     net.Broadcast()
 
-    -- impact sound
     sound.Play(table.Random(GAU_IMPACT_SOUNDS), groundPos, 75, math.random(95, 105), 0.8)
 end
 
@@ -657,15 +659,14 @@ end
 
 -- ============================================================
 -- SHARED 30mm HITSCAN FIRE
--- Damage  : util.BlastDamage (hits props/vehicles/NPCs/players)
--- FX      : tight sparks (r=4) + gred_ground_impact
--- Sound   : per-bullet fire crack (NOT a loop)
+-- Sound   : per-bullet crack from npc_ka52/weapons/30mm*.wav
+-- Damage  : util.BlastDamage
+-- FX      : tight sparks + gred_ground_impact
 -- ============================================================
 
 function ENT:Fire30mmBulletAt(impactPos, bulletIndex)
     local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
-    -- Vertical trace: ensures we always land on real geometry
     local tr = util.TraceLine({
         start  = Vector(impactPos.x, impactPos.y, self.sky + 100),
         endpos = Vector(impactPos.x, impactPos.y, impactPos.z - 128),
@@ -673,16 +674,12 @@ function ENT:Fire30mmBulletAt(impactPos, bulletIndex)
     })
     local groundPos = tr.Hit and tr.HitPos or impactPos
 
-    -- Per-bullet fire sound (one crack per round, not a burst loop)
+    -- Per-bullet fire crack — full path relative to sound/ folder
     sound.Play(table.Random(SOUNDS_30MM), muzzlePos, 110, math.random(95, 105), 1.0)
 
-    -- Impact FX
     self:SpawnGAUImpactFX(groundPos)
-
-    -- Blast damage: hits players, NPCs, props, vehicles in radius
     util.BlastDamage(self, self, groundPos + Vector(0, 0, 36), self.GAU_BlastRadius, self.GAU_BulletDamage)
 
-    -- HEI round every N bullets
     if bulletIndex % self.GAU_HEI_Interval == 0 then
         self:SpawnGAUHEIRound(groundPos)
     end
@@ -691,7 +688,7 @@ function ENT:Fire30mmBulletAt(impactPos, bulletIndex)
 end
 
 -- ============================================================
--- SLOT 1 — 30mm BURST (sweep + lerp, ported from AC-130)
+-- SLOT 1 — 30mm BURST  (0.14s / bullet)
 -- ============================================================
 
 function ENT:Update30mmBurstsSchedule(ct)
@@ -708,7 +705,6 @@ function ENT:StartGAUBurst()
     local targetPos = self:GetTargetGroundPos()
     local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
-    -- Random sweep direction through the target
     local sweepDir = Vector(math.Rand(-1, 1), math.Rand(-1, 1), 0)
     if sweepDir:LengthSqr() < 0.01 then sweepDir = Vector(1, 0, 0) end
     sweepDir:Normalize()
@@ -729,7 +725,7 @@ function ENT:UpdateActiveGAUBursts(ct)
             table.remove(self.GAU_ActiveBursts, idx)
         elseif ct >= burst.nextTime then
             burst.bulletsFired = burst.bulletsFired + 1
-            burst.nextTime     = ct + self.GAU_BurstDelay
+            burst.nextTime     = ct + self.GAU_BurstDelay   -- 0.14s
             self:FireSingleGAUBullet(burst.bulletsFired)
             if burst.bulletsFired >= self.GAU_BurstCount then
                 table.remove(self.GAU_ActiveBursts, idx)
@@ -740,13 +736,11 @@ end
 
 function ENT:FireSingleGAUBullet(bulletIndex)
     if not self.GAU_SweepStartPos then
-        -- Fallback: no sweep initialised yet
         local fallback = self:GetTargetGroundPos() + Vector(math.Rand(-300, 300), math.Rand(-300, 300), 0)
         self:Fire30mmBulletAt(fallback, bulletIndex)
         return
     end
 
-    -- Lerp along sweep line + per-bullet jitter (AC-130 logic)
     local fraction   = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
     local baseImpact = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
     local jitter     = Vector(
@@ -758,14 +752,14 @@ function ENT:FireSingleGAUBullet(bulletIndex)
 end
 
 -- ============================================================
--- SLOT 2 — 30mm SUSTAINED
+-- SLOT 2 — 30mm SUSTAINED  (0.31s / bullet)
 -- ============================================================
 
 function ENT:Update30mmSustained(ct)
     if ct < self.NextShotTimeSpray then return end
     if ct >= self.WeaponWindowEnd  then return end
     self.GAU_SweepMuzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
-    self.NextShotTimeSpray  = ct + self.GAU_Spray_Delay
+    self.NextShotTimeSpray  = ct + self.GAU_Spray_Delay   -- 0.31s
     self.SprayBulletCount   = self.SprayBulletCount + 1
     local finalImpact = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
     self:Fire30mmBulletAt(finalImpact, self.SprayBulletCount)
@@ -905,8 +899,6 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    -- EngineLoop is nilled by StopEngineSound() on death path;
-    -- this only fires for lifetime expiry / external Remove().
     if self.EngineLoop then
         self.EngineLoop:Stop()
         self.EngineLoop = nil
