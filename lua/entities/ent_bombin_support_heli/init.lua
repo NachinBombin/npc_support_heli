@@ -15,31 +15,10 @@ end
 
 local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
 
-local SOUNDS_30MM = {
-    "npc_ka52/weapons/30mm.wav",
-    "npc_ka52/weapons/30mm2.wav",
-    "npc_ka52/weapons/30mm3.wav",
-}
 local SOUNDS_S8_IGNITE   = { "S8.wav",   "S82.wav",   "S83.wav",   "S84.wav"   }
 local SOUNDS_ATGM_IGNITE = { "ATGM.wav", "ATGM2.wav", "ATGM3.wav", "ATGM4.wav" }
 local SOUNDS_LAUNCH      = { "launch1.wav", "launch2.wav" }
 local SOUND_ROCKET_IDLE  = "rocket_idle.wav"
-
-local GAU_IMPACT_SOUNDS = {
-  
-    "physics/concrete/impact_bullet1.wav",
-    "physics/concrete/impact_bullet2.wav",
-    "physics/concrete/impact_bullet3.wav",
-    "physics/dirt/impact_bullet1.wav",
-    "physics/dirt/impact_bullet2.wav",
-    "physics/dirt/impact_bullet3.wav",
-    "physics/metal/metal_solid_impact_bullet1.wav",
-    "physics/metal/metal_solid_impact_bullet2.wav",
-    "physics/metal/metal_solid_impact_bullet3.wav",
-}
-
--- Precache all 30mm fire sounds so the engine has them ready
-for _, s in ipairs(SOUNDS_30MM) do util.PrecacheSound(s) end
 
 local GAU_CAL_ID = 3
 
@@ -66,7 +45,7 @@ local CFG_GAU_JitterAmount    = 400
 local CFG_GAU_FirstBurstTime  = 0
 local CFG_GAU_SecondBurstTime = 4
 local CFG_GAU_HEI_Interval    = 90
-local CFG_GAU_Spray_Delay     = 0.25   -- 0.31s between bullets in sustained mode
+local CFG_GAU_Spray_Delay     = 0.31   -- 0.31s between bullets in sustained mode
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -265,6 +244,9 @@ function ENT:Initialize()
     self.VIKHR_NextShot     = 0
     self.VIKHR_MuzzleIndex  = 1
     self.MuzzleIndexGlobal  = 1
+
+    -- tracer counter: every 3rd bullet is a tracer (CW2.0 behavior)
+    self.TracerCounter = 0
 
     if not HasGred() then
         self:Debug("WARNING: Gredwitch Base not detected — HEI rounds disabled")
@@ -625,69 +607,43 @@ function ENT:PickNewWeapon(ct)
 end
 
 -- ============================================================
--- SHARED 30mm IMPACT FX + HEI SPAWNER
+-- PHYSICAL BULLET SPAWNER
+-- Replaces the old hitscan Fire30mmBulletAt.
+-- Creates an ent_ka52_30mm_bullet that flies from muzzle to
+-- impact with full CW2.0 physics: gravity drop, velocity decay,
+-- tracer beam, blast damage, HEI interval.
 -- ============================================================
 
-function ENT:SpawnGAUImpactFX(groundPos)
-    local ed1 = EffectData()
-    ed1:SetOrigin(groundPos) ed1:SetScale(1.5) ed1:SetMagnitude(1.5) ed1:SetRadius(40)
-    util.Effect("gred_ground_impact", ed1, true, true)
-
-    local ed2 = EffectData()
-    ed2:SetOrigin(groundPos) ed2:SetScale(0.5) ed2:SetMagnitude(0.5) ed2:SetRadius(4)
-    util.Effect("Sparks", ed2, true, true)
-
-    net.Start("gred_net_createimpact")
-        net.WriteVector(groundPos)
-        net.WriteAngle(Angle(0, 0, 0))
-        net.WriteUInt(0, 5)
-        net.WriteUInt(GAU_CAL_ID, 4)
-    net.Broadcast()
-
-    sound.Play(table.Random(GAU_IMPACT_SOUNDS), groundPos, 75, math.random(95, 105), 0.8)
-end
-
-function ENT:SpawnGAUHEIRound(groundPos)
-    if not HasGred() then return end
-    local shell = gred.CreateShell(
-        groundPos + Vector(0, 0, 30), Angle(90, 0, 0),
-        self, { self }, 20, "HE", 80, 0.1, nil, 60, nil, 0.005
-    )
-    if IsValid(shell) then
-        if shell.Arm      then shell:Arm()          end
-        if shell.SetArmed then shell:SetArmed(true) end
-        shell.Armed = true shell.ShouldExplode = true
-        local sp = shell:GetPhysicsObject()
-        if IsValid(sp) then sp:EnableGravity(true) sp:SetVelocity(Vector(0, 0, -8000)) end
+function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
+    -- tracer every 3rd round  (CW2.0: tracerRoundCounter >= 3)
+    self.TracerCounter = self.TracerCounter + 1
+    local isTracer = false
+    if self.TracerCounter >= 3 then
+        isTracer = true
+        self.TracerCounter = 0
     end
-end
 
--- ============================================================
--- SHARED 30mm HITSCAN FIRE
--- Sound   : per-bullet crack from npc_ka52/weapons/30mm*.wav
--- Damage  : util.BlastDamage
--- FX      : tight sparks + gred_ground_impact
--- ============================================================
+    -- direction: muzzle -> impact target (top-down column point)
+    local dir = impactPos - muzzlePos
+    if dir:LengthSqr() < 1 then return end
+    dir:Normalize()
 
-function ENT:Fire30mmBulletAt(impactPos, bulletIndex)
-    local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+    local bul = ents.Create("ent_ka52_30mm_bullet")
+    if not IsValid(bul) then return end
 
-    local tr = util.TraceLine({
-        start  = Vector(impactPos.x, impactPos.y, self.sky + 100),
-        endpos = Vector(impactPos.x, impactPos.y, impactPos.z - 128),
-        filter = self, mask = MASK_SHOT,
-    })
-    local groundPos = tr.Hit and tr.HitPos or impactPos
+    -- set fields before Spawn() so Initialize() can read them
+    bul:SetPos(muzzlePos)
+    bul:SetAngles(dir:Angle())
+    bul.Firer       = self
+    bul.MuzzlePos   = muzzlePos
+    bul.IsTracer    = isTracer
+    bul.BulletDmg   = self.GAU_BulletDamage
+    bul.BulletRad   = self.GAU_BlastRadius
+    bul.BulletIndex = bulletIndex
+    bul.HEIInterval = self.GAU_HEI_Interval
 
-    -- Per-bullet fire crack — full path relative to sound/ folder
-    sound.Play(table.Random(SOUNDS_30MM), muzzlePos, 125, math.random(117, 125), 1.0)
-
-    self:SpawnGAUImpactFX(groundPos)
-    util.BlastDamage(self, self, groundPos + Vector(0, 0, 36), self.GAU_BlastRadius, self.GAU_BulletDamage)
-
-    if bulletIndex % self.GAU_HEI_Interval == 0 then
-        self:SpawnGAUHEIRound(groundPos)
-    end
+    bul:Spawn()
+    bul:Activate()
 
     self:SpawnMuzzleFX(muzzlePos)
 end
@@ -740,20 +696,23 @@ function ENT:UpdateActiveGAUBursts(ct)
 end
 
 function ENT:FireSingleGAUBullet(bulletIndex)
+    local muzzlePos = self.GAU_SweepMuzzlePos or self:GetMuzzleWorldPos(self.MuzzlePoints[1])
+
+    local impactPos
     if not self.GAU_SweepStartPos then
-        local fallback = self:GetTargetGroundPos() + Vector(math.Rand(-300, 300), math.Rand(-300, 300), 0)
-        self:Fire30mmBulletAt(fallback, bulletIndex)
-        return
+        impactPos = self:GetTargetGroundPos() + Vector(math.Rand(-300, 300), math.Rand(-300, 300), 0)
+    else
+        local fraction = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
+        local base     = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
+        local jitter   = Vector(
+            math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
+            math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
+            0
+        )
+        impactPos = base + jitter
     end
 
-    local fraction   = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
-    local baseImpact = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
-    local jitter     = Vector(
-        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
-        math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
-        0
-    )
-    self:Fire30mmBulletAt(baseImpact + jitter, bulletIndex)
+    self:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
 end
 
 -- ============================================================
@@ -767,7 +726,7 @@ function ENT:Update30mmSustained(ct)
     self.NextShotTimeSpray  = ct + self.GAU_Spray_Delay   -- 0.31s
     self.SprayBulletCount   = self.SprayBulletCount + 1
     local finalImpact = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
-    self:Fire30mmBulletAt(finalImpact, self.SprayBulletCount)
+    self:SpawnPhysicalBullet(self.GAU_SweepMuzzlePos, finalImpact, self.SprayBulletCount)
 end
 
 -- ============================================================
