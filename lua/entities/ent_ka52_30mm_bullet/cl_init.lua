@@ -1,49 +1,51 @@
 -- ent_ka52_30mm_bullet / cl_init.lua
--- DEBUG: tracers removed. Shows bullet via model + bright orange dynamic light.
+-- Model renders via ENT:Draw() at the entity's real interpolated position.
+-- DynamicLight follows the entity directly -- no net lag.
 
 include("shared.lua")
 
+-- Still receive net messages so ka52_bullet_remove cleans up liveBullets
+-- used by any future tracer work, and to stay protocol-compatible.
 local liveBullets = {}
 
 net.Receive("ka52_bullet_tracer", function()
-    local pos = net.ReadVector()
-    local dir = net.ReadVector()
-    net.ReadBool()  -- isTracer flag kept for protocol compat, ignored
-    local id  = net.ReadUInt(16)
-    liveBullets[id] = { pos = pos, dir = dir }
+    net.ReadVector() net.ReadVector() net.ReadBool()
+    local id = net.ReadUInt(16)
+    liveBullets[id] = true
 end)
 
 net.Receive("ka52_bullet_pos", function()
-    local id  = net.ReadUInt(16)
-    local pos = net.ReadVector()
-    local dir = net.ReadVector()
-    if liveBullets[id] then
-        liveBullets[id].pos = pos
-        liveBullets[id].dir = dir
-    end
+    net.ReadUInt(16) net.ReadVector() net.ReadVector()
 end)
 
 net.Receive("ka52_bullet_remove", function()
-    local id = net.ReadUInt(16)
-    liveBullets[id] = nil
+    liveBullets[net.ReadUInt(16)] = nil
 end)
 
 -- ============================================================
---  DYNAMIC LIGHT  — bright light-orange attached to each bullet
+--  DRAW  -- called every frame by the engine at the entity's
+--  interpolated world position. No manual position tracking needed.
 -- ============================================================
 
-hook.Add("PreDrawOpaqueRenderables", "ka52_bullet_dlights", function()
-    for id, bul in pairs(liveBullets) do
-        local dl = DynamicLight(id)
-        if dl then
-            dl.Pos        = bul.pos
-            dl.r          = 255
-            dl.g          = 140
-            dl.b          = 40
-            dl.Brightness = 4
-            dl.Size       = 120
-            dl.Decay      = 800
-            dl.DieTime    = CurTime() + 0.05
-        end
+function ENT:Draw()
+    self:DrawModel()
+end
+
+-- ============================================================
+--  DYNAMIC LIGHT  -- follows the actual entity, not a net buffer
+-- ============================================================
+
+function ENT:DrawTranslucent()
+    -- DynamicLight index must be unique per entity
+    local dl = DynamicLight(self:EntIndex())
+    if dl then
+        dl.Pos        = self:GetPos()
+        dl.r          = 255
+        dl.g          = 140
+        dl.b          = 40
+        dl.Brightness = 4
+        dl.Size       = 120
+        dl.Decay      = 1200
+        dl.DieTime    = CurTime() + 0.05
     end
-end)
+end
