@@ -3,7 +3,7 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 -- Permanent yaw correction so the KA-50 mesh faces the direction of travel.
-local MODEL_YAW_OFFSET = 70
+local MODEL_YAW_OFFSET = 0
 
 local function HasGred()
     return gred and gred.CreateBullet and gred.CreateShell
@@ -13,7 +13,7 @@ end
 -- SOUNDS
 -- ============================================================
 
-local ENGINE_LOOP_SOUND = "lyutyy/engine_high.wav"
+local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
 
 local SOUNDS_30MM = {
     "npc_ka52/weapons/30mm.wav",
@@ -26,11 +26,16 @@ local SOUNDS_LAUNCH      = { "launch1.wav", "launch2.wav" }
 local SOUND_ROCKET_IDLE  = "rocket_idle.wav"
 
 local GAU_IMPACT_SOUNDS = {
-    "gredwitch/impacts/bullet_impact_dirt_01.wav",
-    "gredwitch/impacts/bullet_impact_dirt_02.wav",
-    "gredwitch/impacts/bullet_impact_dirt_03.wav",
-    "gredwitch/impacts/bullet_impact_concrete_01.wav",
-    "gredwitch/impacts/bullet_impact_concrete_02.wav",
+  
+    "physics/concrete/impact_bullet1.wav",
+    "physics/concrete/impact_bullet2.wav",
+    "physics/concrete/impact_bullet3.wav",
+    "physics/dirt/impact_bullet1.wav",
+    "physics/dirt/impact_bullet2.wav",
+    "physics/dirt/impact_bullet3.wav",
+    "physics/metal/metal_solid_impact_bullet1.wav",
+    "physics/metal/metal_solid_impact_bullet2.wav",
+    "physics/metal/metal_solid_impact_bullet3.wav",
 }
 
 -- Precache all 30mm fire sounds so the engine has them ready
@@ -52,7 +57,7 @@ local CFG_MuzzlePoints = {
     Vector( 87, 111, 37),
 }
 
-local CFG_GAU_BurstCount      = 10
+local CFG_GAU_BurstCount      = 30
 local CFG_GAU_BurstDelay      = 0.14   -- 0.14s between bullets in burst mode
 local CFG_GAU_BulletDamage    = 40
 local CFG_GAU_BlastRadius     = 80
@@ -60,8 +65,8 @@ local CFG_GAU_SweepHalfLength = 300
 local CFG_GAU_JitterAmount    = 400
 local CFG_GAU_FirstBurstTime  = 0
 local CFG_GAU_SecondBurstTime = 4
-local CFG_GAU_HEI_Interval    = 20
-local CFG_GAU_Spray_Delay     = 0.31   -- 0.31s between bullets in sustained mode
+local CFG_GAU_HEI_Interval    = 90
+local CFG_GAU_Spray_Delay     = 0.25   -- 0.31s between bullets in sustained mode
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -237,7 +242,7 @@ function ENT:Initialize()
     -- Single engine loop
     self.EngineLoop = CreateSound(self, ENGINE_LOOP_SOUND)
     if self.EngineLoop then
-        self.EngineLoop:SetSoundLevel(125)
+        self.EngineLoop:SetSoundLevel(120)
         self.EngineLoop:ChangePitch(100, 0)
         self.EngineLoop:ChangeVolume(1.0, 0.5)
         self.EngineLoop:Play()
@@ -675,7 +680,7 @@ function ENT:Fire30mmBulletAt(impactPos, bulletIndex)
     local groundPos = tr.Hit and tr.HitPos or impactPos
 
     -- Per-bullet fire crack — full path relative to sound/ folder
-    sound.Play(table.Random(SOUNDS_30MM), muzzlePos, 110, math.random(95, 105), 1.0)
+    sound.Play(table.Random(SOUNDS_30MM), muzzlePos, 125, math.random(117, 125), 1.0)
 
     self:SpawnGAUImpactFX(groundPos)
     util.BlastDamage(self, self, groundPos + Vector(0, 0, 36), self.GAU_BlastRadius, self.GAU_BulletDamage)
