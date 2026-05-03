@@ -53,6 +53,9 @@ function ENT:Initialize()
 
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
 
+    -- Trail is serverside-only; clients see it via the networked entity
+    util.SpriteTrail(self, 0, Color(255, 200, 80, 255), true, 28, 0, 0.4, 1, "trails/laser")
+
     local mpos = self.MuzzlePos or self:GetPos()
     net.Start("ka52_bullet_tracer")
         net.WriteVector(mpos)
