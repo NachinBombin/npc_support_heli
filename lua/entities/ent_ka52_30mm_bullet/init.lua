@@ -51,37 +51,17 @@ function ENT:Initialize()
     self.bul_firer       = self.Firer
     self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
 
-    -- Per-bullet fire sound (not a loop)
+    -- Per-bullet fire sound
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
 
-    -- Orange glowing sprite trail
-    self:SetNWBool("ka52_trail", true)   -- flag for cl_init if needed
-    util.SpriteTrail(self, 0, Color(255, 160, 40, 200), false, 6, 1, 0.18, 1 / (6 + 1) * 0.5, "effects/softglow")
+    -- Orange glowing sprite trail (serverside call is valid)
+    util.SpriteTrail(self, 0, Color(255, 160, 40, 200), false, 6, 1, 0.18, 1/(6+1)*0.5, "effects/softglow")
 
-    -- Muzzle flash at spawn origin — vanilla GMod effect
+    -- Tell clients: spawn position (for muzzle flash), direction, tracer flag, entity index
+    -- cl_init.lua will fire MuzzleEffect + DynamicLight from this message
     local mpos = self.MuzzlePos or self:GetPos()
-    local med = EffectData()
-    med:SetOrigin(mpos)
-    med:SetAngles(self:GetAngles())
-    med:SetScale(2.5)
-    med:SetMagnitude(2.5)
-    util.Effect("MuzzleEffect", med, true, true)
-
-    -- Muzzle light flash — brief bright light at the gun barrel
-    local mld = DynamicLight(self:EntIndex() + 4096)
-    if mld then
-        mld.Pos        = mpos
-        mld.r          = 255
-        mld.g          = 200
-        mld.b          = 80
-        mld.Brightness = 10
-        mld.Size       = 200
-        mld.Decay      = 8000   -- fades in ~0.025s
-        mld.DieTime    = CurTime() + 0.025
-    end
-
     net.Start("ka52_bullet_tracer")
-        net.WriteVector(self.bul_position)
+        net.WriteVector(mpos)
         net.WriteVector(self.bul_direction)
         net.WriteBool(true)
         net.WriteUInt(self:EntIndex(), 16)

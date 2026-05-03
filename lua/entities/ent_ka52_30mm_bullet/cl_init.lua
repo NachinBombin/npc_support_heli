@@ -1,23 +1,56 @@
 include("shared.lua")
 
--- Drain net messages for protocol compat
+-- ============================================================
+-- NET  -- muzzle flash + dlight on bullet spawn
+-- ============================================================
 net.Receive("ka52_bullet_tracer", function()
-    net.ReadVector() net.ReadVector() net.ReadBool() net.ReadUInt(16)
+    local mpos = net.ReadVector()   -- muzzle world position
+    local dir  = net.ReadVector()   -- forward direction
+    net.ReadBool()                  -- tracer flag (unused)
+    net.ReadUInt(16)                -- entity index (unused here)
+
+    -- Vanilla muzzle flash effect
+    local med = EffectData()
+    med:SetOrigin(mpos)
+    med:SetAngles(dir:Angle())
+    med:SetScale(2.5)
+    med:SetMagnitude(2.5)
+    util.Effect("MuzzleEffect", med)
+
+    -- Brief bright muzzle dynamic light
+    -- Use a rolling index (1-512) to avoid clobbering the bullet travel dlights
+    if not _ka52_muzzle_dlight_idx then _ka52_muzzle_dlight_idx = 512 end
+    _ka52_muzzle_dlight_idx = (_ka52_muzzle_dlight_idx % 512) + 1
+
+    local dl = DynamicLight(_ka52_muzzle_dlight_idx)
+    if dl then
+        dl.Pos        = mpos
+        dl.r          = 255
+        dl.g          = 200
+        dl.b          = 80
+        dl.Brightness = 10
+        dl.Size       = 220
+        dl.Decay      = 8000
+        dl.DieTime    = CurTime() + 0.03
+    end
 end)
+
 net.Receive("ka52_bullet_pos", function()
     net.ReadUInt(16) net.ReadVector() net.ReadVector()
 end)
+
 net.Receive("ka52_bullet_remove", function()
     net.ReadUInt(16)
 end)
 
--- Called every frame by engine to render the bullet model
+-- ============================================================
+-- RENDER
+-- ============================================================
 function ENT:Draw()
     self:DrawModel()
 end
 
--- DynamicLight MUST live in DrawTranslucent, not Draw().
--- Index offset avoids collision with engine reserved 0-255 range.
+-- Traveling dynamic light follows the entity every frame
 function ENT:DrawTranslucent()
     local dl = DynamicLight(self:EntIndex() + 8192)
     if dl then
