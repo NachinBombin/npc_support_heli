@@ -1,33 +1,16 @@
 -- ent_ka52_30mm_bullet / cl_init.lua
--- Client side: tracer beam rendering ported from CW2.0 renderTracerBullets
+-- DEBUG: tracers removed. Shows bullet via model + bright orange dynamic light.
 
 include("shared.lua")
-
--- ============================================================
---  TRACER MATERIAL  (CW2.0 exact material definition)
--- ============================================================
-
-local tracerMat = CreateMaterial("ka52_bullet_tracer", "UnlitGeneric", {
-    ["$basetexture"] = "sprites/glow03",
-    ["$additive"]    = "1",
-    ["$vertexcolor"] = "1",
-    ["$vertexalpha"] = "1",
-})
-local TRACER_COLOR = Color(255, 167, 112, 255)  -- CW2.0 warm orange
-
--- ============================================================
---  LOCAL BULLET TABLE
---  key = server EntIndex, value = { pos, dir, isTracer }
--- ============================================================
 
 local liveBullets = {}
 
 net.Receive("ka52_bullet_tracer", function()
-    local pos      = net.ReadVector()
-    local dir      = net.ReadVector()
-    local isTracer = net.ReadBool()
-    local id       = net.ReadUInt(16)
-    liveBullets[id] = { pos = pos, dir = dir, isTracer = isTracer }
+    local pos = net.ReadVector()
+    local dir = net.ReadVector()
+    net.ReadBool()  -- isTracer flag kept for protocol compat, ignored
+    local id  = net.ReadUInt(16)
+    liveBullets[id] = { pos = pos, dir = dir }
 end)
 
 net.Receive("ka52_bullet_pos", function()
@@ -46,21 +29,21 @@ net.Receive("ka52_bullet_remove", function()
 end)
 
 -- ============================================================
---  RENDER  (CW2.0 renderTracerBullets, ported verbatim)
+--  DYNAMIC LIGHT  — bright light-orange attached to each bullet
 -- ============================================================
 
-hook.Add("PostDrawOpaqueRenderables", "ka52_bullet_tracers", function()
-    local eyePos    = EyePos()
-    local eyeFwd    = EyeAngles():Forward():GetNormalized()
-
+hook.Add("PreDrawOpaqueRenderables", "ka52_bullet_dlights", function()
     for id, bul in pairs(liveBullets) do
-        local pos  = bul.pos
-        local norm = bul.dir:GetNormal()
-
-        if bul.isTracer then
-            render.SetMaterial(tracerMat)
-            render.DrawSprite(pos + norm * 128, 8, 8, TRACER_COLOR)
-            render.DrawBeam(pos + norm * 256, pos, 4, 0, 1, TRACER_COLOR)
+        local dl = DynamicLight(id)
+        if dl then
+            dl.Pos        = bul.pos
+            dl.r          = 255
+            dl.g          = 140
+            dl.b          = 40
+            dl.Brightness = 4
+            dl.Size       = 120
+            dl.Decay      = 800
+            dl.DieTime    = CurTime() + 0.05
         end
     end
 end)

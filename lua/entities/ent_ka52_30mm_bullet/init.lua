@@ -3,14 +3,10 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
--- ============================================================
---  CONSTANTS
--- ============================================================
-
-local MUZZLE_VELOCITY   = 25000   -- units/s  (raised for snappy visual travel)
-local FALL_SPEED        = 1.5     -- deg/s pitch droop
-local VELOCITY_DECAY    = 0.9     -- asymptote: 90% of muzzle velocity
-local VELOCITY_APPROACH = 50000   -- units/s² bleed rate (gradual, not instant)
+local MUZZLE_VELOCITY   = 25000
+local FALL_SPEED        = 1.5
+local VELOCITY_DECAY    = 0.9
+local VELOCITY_APPROACH = 50000
 local BLAST_RADIUS      = 80
 local BLAST_DAMAGE      = 40
 local HEI_INTERVAL      = 90
@@ -34,6 +30,9 @@ local FIRE_SOUNDS = {
 }
 for _, s in ipairs(FIRE_SOUNDS) do util.PrecacheSound(s) end
 
+local BULLET_MODEL = "models/weapons/bt_762.mdl"
+util.PrecacheModel(BULLET_MODEL)
+
 local GAU_CAL_ID = 3
 
 -- ============================================================
@@ -41,10 +40,13 @@ local GAU_CAL_ID = 3
 -- ============================================================
 
 function ENT:Initialize()
+    self:SetModel(BULLET_MODEL)
     self:SetMoveType(MOVETYPE_NONE)
     self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_NONE)
     self:DrawShadow(false)
+    self:Spawn()
+    self:SetModelScale(3, 0)  -- scale up so it's clearly visible
 
     self.bul_position    = self:GetPos()
     self.bul_direction   = self:GetAngles():Forward()
@@ -52,7 +54,7 @@ function ENT:Initialize()
     self.bul_fallSpeed   = FALL_SPEED
     self.bul_dirAngle    = self.bul_direction:Angle()
     self.bul_initVel     = MUZZLE_VELOCITY
-    self.bul_isTracer    = true   -- ALL bullets are tracers
+    self.bul_isTracer    = true
     self.bul_damage      = self.BulletDmg    or BLAST_DAMAGE
     self.bul_radius      = self.BulletRad    or BLAST_RADIUS
     self.bul_index       = self.BulletIndex  or 1
@@ -62,10 +64,11 @@ function ENT:Initialize()
     local muzzlePos = self.MuzzlePos or self:GetPos()
     sound.Play(table.Random(FIRE_SOUNDS), muzzlePos, 125, math.random(117, 125), 1.0)
 
+    -- send spawn notice to client for dlight
     net.Start("ka52_bullet_tracer")
         net.WriteVector(self.bul_position)
         net.WriteVector(self.bul_direction)
-        net.WriteBool(true)   -- always tracer
+        net.WriteBool(true)
         net.WriteUInt(self:EntIndex(), 16)
     net.Broadcast()
 
@@ -108,14 +111,15 @@ function ENT:Think()
         dt * VELOCITY_APPROACH
     )
 
+    self.bul_position = tr.HitPos
+    self:SetPos(self.bul_position)
+    self:SetAngles(self.bul_dirAngle)
+
     net.Start("ka52_bullet_pos")
         net.WriteUInt(self:EntIndex(), 16)
         net.WriteVector(tr.HitPos)
         net.WriteVector(self.bul_direction)
     net.Broadcast()
-
-    self.bul_position = tr.HitPos
-    self:SetPos(self.bul_position)
 
     if tr.Hit or tr.HitSky then
         self:OnImpact(tr, traceStart)
