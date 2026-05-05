@@ -4,9 +4,7 @@ include("shared.lua")
 
 local BULLET_MODEL      = "models/weapons/bt_762.mdl"
 local MUZZLE_VELOCITY   = 25000
-local FALL_SPEED        = 1.5
-local VELOCITY_DECAY    = 0.9
-local VELOCITY_APPROACH = 50000
+local GRAVITY_SCALE     = 0.08
 local BLAST_RADIUS      = 80
 local BLAST_DAMAGE      = 40
 local HEI_INTERVAL      = 90
@@ -34,32 +32,30 @@ util.PrecacheModel(BULLET_MODEL)
 function ENT:Initialize()
     self:SetModel(BULLET_MODEL)
     self:SetModelScale(3, 0)
-    self:SetMoveType(MOVETYPE_NONE)
+    self:SetMoveType(MOVETYPE_FLY)
     self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_NONE)
     self:DrawShadow(false)
+    self:SetGravity(0)
 
-    self.bul_position    = self:GetPos()
-    self.bul_direction   = self:GetAngles():Forward()
-    self.bul_velocity    = MUZZLE_VELOCITY
-    self.bul_fallSpeed   = FALL_SPEED
-    self.bul_dirAngle    = self.bul_direction:Angle()
-    self.bul_initVel     = MUZZLE_VELOCITY
+    local fwd = self:GetAngles():Forward()
+    self:SetLocalVelocity(fwd * MUZZLE_VELOCITY)
+
+    self.bul_firer       = self.Firer
     self.bul_damage      = self.BulletDmg   or BLAST_DAMAGE
     self.bul_radius      = self.BulletRad   or BLAST_RADIUS
     self.bul_index       = self.BulletIndex or 1
-    self.bul_firer       = self.Firer
     self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
+    self.bul_spawnTime   = CurTime()
 
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
 
-    -- Trail: increased lifetime (1.2s) and width (18) for a long visible streak
     util.SpriteTrail(self, 0, Color(255, 200, 80, 255), true, 18, 0, 1.2, 1, "trails/laser")
 
     local mpos = self.MuzzlePos or self:GetPos()
     net.Start("ka52_bullet_tracer")
         net.WriteVector(mpos)
-        net.WriteVector(self.bul_direction)
+        net.WriteVector(fwd)
         net.WriteBool(true)
         net.WriteUInt(self:EntIndex(), 16)
     net.Broadcast()
@@ -68,33 +64,26 @@ function ENT:Initialize()
 end
 
 function ENT:Think()
-    local ct = CurTime()
-    local dt = engine.TickInterval()
+    local ct  = CurTime()
+    local pos = self:GetPos()
+    local dt  = engine.TickInterval()
 
-    if util.PointContents(self.bul_position) == CONTENTS_SOLID then
-        self:Remove() return
-    end
+    -- gentle gravity droop
+    local vel = self:GetLocalVelocity()
+    vel.z = vel.z - (600 * GRAVITY_SCALE * dt)
+    self:SetLocalVelocity(vel)
+    self:SetAngles(vel:Angle())
 
-    self.bul_dirAngle.p = math.Approach(
-        math.NormalizeAngle(self.bul_dirAngle.p), 90, self.bul_fallSpeed * dt)
-    self.bul_direction = self.bul_dirAngle:Forward()
-
-    local traceStart = self.bul_position
-    local traceEnd   = traceStart + self.bul_direction * self.bul_velocity * dt
-
+    -- one-tick-ahead impact trace
     local filter = { self }
     if IsValid(self.bul_firer) then table.insert(filter, self.bul_firer) end
-
-    local tr = util.TraceLine({ start=traceStart, endpos=traceEnd, filter=filter, mask=MASK_SHOT })
-
-    self.bul_velocity = math.Approach(self.bul_velocity, self.bul_initVel * VELOCITY_DECAY, dt * VELOCITY_APPROACH)
-
-    self.bul_position = tr.HitPos
-    self:SetPos(self.bul_position)
-    self:SetAngles(self.bul_dirAngle)
-
+    local tr = util.TraceLine({ start=pos, endpos=pos + vel * dt, filter=filter, mask=MASK_SHOT })
     if tr.Hit or tr.HitSky then
         self:OnImpact(tr) self:Remove() return
+    end
+
+    if not util.IsInWorld(pos) or (ct - self.bul_spawnTime) > 8 then
+        self:Remove() return
     end
 
     self:NextThink(ct + dt)
