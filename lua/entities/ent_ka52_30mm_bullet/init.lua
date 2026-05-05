@@ -2,14 +2,6 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
--- ============================================================
--- KA52 GAU Bullet - Physical projectile system
--- Ported from AC-130 traj_gau architecture:
--- Bullets are pure Lua table entries, ticked every server Tick
--- and every client CreateMove. No entity movement.
--- The entity exists only as a sound/trail anchor, removed instantly.
--- ============================================================
-
 local BULLET_MODEL  = "models/weapons/bt_762.mdl"
 local BLAST_RADIUS  = 80
 local BLAST_DAMAGE  = 40
@@ -39,9 +31,6 @@ local FIRE_SOUNDS = {
 for _, s in ipairs(FIRE_SOUNDS) do util.PrecacheSound(s) end
 util.PrecacheModel(BULLET_MODEL)
 
--- ============================================================
--- Projectile store (mirrors traj_gau_store)
--- ============================================================
 ka52_gau_store = ka52_gau_store or {
     last_idx           = 0,
     buffer_size        = 128,
@@ -70,9 +59,6 @@ if #ka52_gau_store.buffer == 0 then
     end
 end
 
--- ============================================================
--- Damage helpers
--- ============================================================
 local BREAKABLE = {
     ["func_breakable_surf"]      = true,
     ["func_breakable"]           = true,
@@ -82,22 +68,27 @@ local BREAKABLE = {
 
 local function apply_damage(proj, tr, shooter)
     local hit_ent = tr.Entity
-    local damage  = proj.damage
-    local fvec    = proj.dir * damage * FORCE_MUL
+    if not IsValid(hit_ent) then return end
 
-    if hit_ent:IsPlayer() or hit_ent:IsNPC() then
-        shooter:DispatchTraceAttack(tr, damage, fvec)
-        return
-    end
+    local damage = proj.damage
+    local fvec   = proj.dir * damage * FORCE_MUL
 
+    -- Breakable props: use FireBullets so the engine handles breakage
     if BREAKABLE[hit_ent:GetClass()] then
         shooter:FireBullets({
-            Src=tr.HitPos-proj.dir, Dir=proj.dir, Damage=damage,
-            Force=damage*FORCE_MUL, Distance=2, Num=1, Tracer=0, Inflictor=shooter
+            Src       = tr.HitPos - proj.dir,
+            Dir       = proj.dir,
+            Damage    = damage,
+            Force     = damage * FORCE_MUL,
+            Distance  = 2,
+            Num       = 1,
+            Tracer    = 0,
+            Inflictor = shooter,
         })
         return
     end
 
+    -- Players, NPCs, and everything else: uniform DamageInfo path
     local dmg = DamageInfo()
     dmg:SetDamage(damage)
     dmg:SetAttacker(shooter)
@@ -109,10 +100,9 @@ local function apply_damage(proj, tr, shooter)
 end
 
 local function apply_impact_fx(proj, tr)
-    local hitPos = tr.HitPos
+    local hitPos  = tr.HitPos
     local shooter = IsValid(proj.firer_ent) and proj.firer_ent or proj.shooter
 
-    -- blast damage
     util.BlastDamage(shooter, shooter, hitPos + Vector(0,0,36), proj.blast_radius, proj.damage)
 
     local ed1 = EffectData()
@@ -133,13 +123,22 @@ local function apply_impact_fx(proj, tr)
     sound.Play(table.Random(IMPACT_SOUNDS), hitPos, 75, math.random(95,105), 0.8)
 
     if proj.bullet_index % proj.hei_interval == 0 then
-        proj:SpawnHEI(hitPos)
+        if gred and gred.CreateShell then
+            local firer = IsValid(proj.firer_ent) and proj.firer_ent or proj.shooter
+            local shell = gred.CreateShell(
+                hitPos + Vector(0,0,30), Angle(90,0,0),
+                firer, {firer}, 20, "HE", 80, 0.1, nil, 60, nil, 0.005
+            )
+            if IsValid(shell) then
+                shell.Armed = true shell.ShouldExplode = true
+                if shell.Arm then shell:Arm() end
+                local sp = shell:GetPhysicsObject()
+                if IsValid(sp) then sp:EnableGravity(true) sp:SetVelocity(Vector(0,0,-8000)) end
+            end
+        end
     end
 end
 
--- ============================================================
--- Per-tick movement (server)
--- ============================================================
 local tick_interval = engine.TickInterval()
 
 local function move_projectile(proj)
@@ -192,9 +191,6 @@ hook.Add("Tick", "ka52_gau_move_sv", function()
     end
 end)
 
--- ============================================================
--- Spawn / broadcast a new projectile
--- ============================================================
 if SERVER then
     util.AddNetworkString("ka52_gau_projectile")
 
@@ -228,9 +224,6 @@ if SERVER then
     end
 end
 
--- ============================================================
--- Entity: anchor for sound + trail only, removed after 1 tick
--- ============================================================
 function ENT:Initialize()
     self:SetModel(BULLET_MODEL)
     self:SetModelScale(3, 0)
@@ -244,32 +237,16 @@ function ENT:Initialize()
 
     sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or pos, 125, math.random(117, 125), 1.0)
 
-    -- Spawn the pure-Lua projectile
     ka52_gau_spawn(
         IsValid(self.Firer) and self.Firer or self,
         self.Firer,
         self.MuzzlePos or pos,
         fwd,
-        self.BulletIndex   or 1,
-        self.HEIInterval   or HEI_INTERVAL,
-        self.BulletRad     or BLAST_RADIUS,
-        self.BulletDmg     or BLAST_DAMAGE
+        self.BulletIndex or 1,
+        self.HEIInterval or HEI_INTERVAL,
+        self.BulletRad   or BLAST_RADIUS,
+        self.BulletDmg   or BLAST_DAMAGE
     )
 
-    -- Entity no longer needed
     self:Remove()
-end
-
-function ENT:SpawnHEI(groundPos)
-    if not (gred and gred.CreateShell) then return end
-    local firer = IsValid(self.bul_firer) and self.bul_firer or self
-    local shell = gred.CreateShell(
-        groundPos + Vector(0,0,30), Angle(90,0,0),
-        firer, {firer}, 20, "HE", 80, 0.1, nil, 60, nil, 0.005
-    )
-    if not IsValid(shell) then return end
-    shell.Armed = true shell.ShouldExplode = true
-    if shell.Arm then shell:Arm() end
-    local sp = shell:GetPhysicsObject()
-    if IsValid(sp) then sp:EnableGravity(true) sp:SetVelocity(Vector(0,0,-8000)) end
 end
