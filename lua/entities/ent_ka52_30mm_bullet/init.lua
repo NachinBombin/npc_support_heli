@@ -39,7 +39,7 @@ function ENT:Initialize()
     self:SetGravity(0)
 
     local fwd = self:GetAngles():Forward()
-    self:SetLocalVelocity(fwd * MUZZLE_VELOCITY)
+    self:SetVelocity(fwd * MUZZLE_VELOCITY)
 
     self.bul_firer       = self.Firer
     self.bul_damage      = self.BulletDmg   or BLAST_DAMAGE
@@ -68,13 +68,11 @@ function ENT:Think()
     local pos = self:GetPos()
     local dt  = engine.TickInterval()
 
-    -- gentle gravity droop
-    local vel = self:GetLocalVelocity()
+    local vel = self:GetVelocity()
     vel.z = vel.z - (600 * GRAVITY_SCALE * dt)
-    self:SetLocalVelocity(vel)
+    self:SetVelocity(vel)
     self:SetAngles(vel:Angle())
 
-    -- one-tick-ahead impact trace
     local filter = { self }
     if IsValid(self.bul_firer) then table.insert(filter, self.bul_firer) end
     local tr = util.TraceLine({ start=pos, endpos=pos + vel * dt, filter=filter, mask=MASK_SHOT })
