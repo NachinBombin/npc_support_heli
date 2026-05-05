@@ -1,11 +1,5 @@
 include("shared.lua")
 
--- ============================================================
--- Client: receive projectile spawns, tick movement with
--- CreateMove, render with Hermite interpolation
--- Mirrors the AC-130 traj_gau client architecture exactly.
--- ============================================================
-
 local mat_beam = Material("effects/laser1")
 local mat_glow = Material("sprites/light_glow02_add")
 
@@ -37,9 +31,6 @@ if #ka52_gau_store.buffer == 0 then
     end
 end
 
--- ============================================================
--- Net: receive new projectile from server
--- ============================================================
 net.Receive("ka52_gau_projectile", function()
     local pos = net.ReadVector()
     local dir = net.ReadVector()
@@ -64,9 +55,6 @@ net.Receive("ka52_gau_projectile", function()
     store.active_projectiles[#store.active_projectiles + 1] = proj
 end)
 
--- ============================================================
--- Per-tick movement (client, fires once per game tick)
--- ============================================================
 local tick_interval = engine.TickInterval()
 local last_tick     = engine.TickCount()
 
@@ -76,9 +64,7 @@ local function move_cl()
     local idx    = 1
     while idx <= count do
         local proj = active[idx]
-        if proj.hit
-            or proj.distance_traveled >= MAX_DIST
-            or proj.speed <= MIN_SPEED then
+        if proj.hit or proj.distance_traveled >= MAX_DIST or proj.speed <= MIN_SPEED then
             active[idx] = active[count]
             active[count] = nil
             count = count - 1
@@ -103,9 +89,6 @@ hook.Add("CreateMove", "ka52_gau_move_cl", function()
     end
 end)
 
--- ============================================================
--- Render: Hermite interpolation between ticks = buttery smooth
--- ============================================================
 local function render_projectiles()
     local active = ka52_gau_store.active_projectiles
     local count  = #active
@@ -115,13 +98,13 @@ local function render_projectiles()
     local real_time    = UnPredictedCurTime()
     local cur_ticktime = engine.TickCount() * tick_interval
     local interp_frac  = math.Clamp((real_time - cur_ticktime) / tick_interval, 0, 2)
-    local min_trail    = 8
+    local min_trail    = 120   -- much longer minimum trail length
 
     for i = 1, count do
         local p = active[i]
         if p.hit then continue end
 
-        -- Hermite interpolation for sub-tick smooth position
+        -- Hermite interpolation
         local render_pos = p.pos
         if interp_frac <= 1.0 then
             local t  = interp_frac
@@ -136,7 +119,7 @@ local function render_projectiles()
                        + p.vel               * (h4 * tick_interval)
         end
 
-        -- Trail tail
+        -- Trail tail: enforce long minimum
         local tail_end = p.old_pos or render_pos
         if p.vel then
             local vls = p.vel:LengthSqr()
@@ -149,17 +132,21 @@ local function render_projectiles()
         end
 
         local dist  = math.sqrt(cam_pos:DistToSqr(render_pos))
-        local scale = math.Clamp(dist / 3000, 1, 2)
+        local scale = math.Clamp(dist / 1200, 1.5, 6)  -- much larger scale, closer falloff
 
-        -- Trail beam
+        -- Wide hot-white core beam
         render.SetMaterial(mat_beam)
         if render_pos:DistToSqr(tail_end) > 4 then
-            render.DrawBeam(tail_end, render_pos, 1.5 * scale, 0, 1, Color(255, 200, 80, 120))
+            render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 240, 180, 255))  -- bright white-orange core
         end
 
-        -- Glow sprite
+        -- Outer orange glow beam (wider, more transparent)
+        render.DrawBeam(tail_end, render_pos, 22 * scale, 0, 1, Color(255, 120, 0, 120))
+
+        -- Large glow sprite at tip
         render.SetMaterial(mat_glow)
-        render.DrawSprite(render_pos, 6 * scale, 6 * scale, Color(255, 100, 0, 255))
+        render.DrawSprite(render_pos, 80 * scale, 80 * scale, Color(255, 160, 20, 200))  -- outer halo
+        render.DrawSprite(render_pos, 20 * scale, 20 * scale, Color(255, 255, 200, 255)) -- hot core
     end
 end
 
@@ -168,5 +155,4 @@ hook.Add("PostDrawTranslucentRenderables", "ka52_gau_render", function(depth, sk
     render_projectiles()
 end)
 
--- No ENT:Draw / ENT:DrawTranslucent needed — entity is removed on spawn
 function ENT:Draw() end
