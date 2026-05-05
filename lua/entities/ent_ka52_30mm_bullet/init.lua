@@ -2,14 +2,23 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
-local BULLET_MODEL    = "models/weapons/bt_762.mdl"
-local MUZZLE_VELOCITY = 25000
-local BLAST_RADIUS    = 80
-local BLAST_DAMAGE    = 40
-local HEI_INTERVAL    = 90
-local GAU_CAL_ID      = 3
-local MAX_RANGE       = 32768   -- max travel distance per bullet
-local STEP_SIZE       = 2048    -- trace in chunks to avoid engine limits
+-- ============================================================
+-- KA52 GAU Bullet - Physical projectile system
+-- Ported from AC-130 traj_gau architecture:
+-- Bullets are pure Lua table entries, ticked every server Tick
+-- and every client CreateMove. No entity movement.
+-- The entity exists only as a sound/trail anchor, removed instantly.
+-- ============================================================
+
+local BULLET_MODEL  = "models/weapons/bt_762.mdl"
+local BLAST_RADIUS  = 80
+local BLAST_DAMAGE  = 40
+local HEI_INTERVAL  = 90
+local GAU_CAL_ID    = 3
+local MUZZLE_VEL    = 25000
+local MAX_DIST      = 22000
+local MIN_SPEED     = 200
+local FORCE_MUL     = 5.0
 
 local IMPACT_SOUNDS = {
     "physics/concrete/impact_bullet1.wav",
@@ -30,105 +39,81 @@ local FIRE_SOUNDS = {
 for _, s in ipairs(FIRE_SOUNDS) do util.PrecacheSound(s) end
 util.PrecacheModel(BULLET_MODEL)
 
-function ENT:Initialize()
-    self:SetModel(BULLET_MODEL)
-    self:SetModelScale(3, 0)
-    self:SetMoveType(MOVETYPE_NONE)
-    self:SetSolid(SOLID_NONE)
-    self:SetCollisionGroup(COLLISION_GROUP_NONE)
-    self:DrawShadow(false)
+-- ============================================================
+-- Projectile store (mirrors traj_gau_store)
+-- ============================================================
+ka52_gau_store = ka52_gau_store or {
+    last_idx           = 0,
+    buffer_size        = 128,
+    buffer             = {},
+    active_projectiles = {},
+}
 
-    local origin = self:GetPos()
-    local fwd    = self:GetAngles():Forward()
-
-    self.bul_firer       = self.Firer
-    self.bul_damage      = self.BulletDmg   or BLAST_DAMAGE
-    self.bul_radius      = self.BulletRad   or BLAST_RADIUS
-    self.bul_index       = self.BulletIndex or 1
-    self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
-
-    -- Per-bullet fire sound
-    sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or origin, 125, math.random(117, 125), 1.0)
-
-    -- Net: muzzle flash position for client
-    local mpos = self.MuzzlePos or origin
-    net.Start("ka52_bullet_tracer")
-        net.WriteVector(mpos)
-        net.WriteVector(fwd)
-        net.WriteBool(true)
-        net.WriteUInt(self:EntIndex(), 16)
-    net.Broadcast()
-
-    -- Trace the full bullet path right now, in chunks
-    local filter = { self }
-    if IsValid(self.bul_firer) then table.insert(filter, self.bul_firer) end
-
-    local pos      = origin
-    local traveled = 0
-    local hitTr    = nil
-
-    while traveled < MAX_RANGE do
-        local step    = math.min(STEP_SIZE, MAX_RANGE - traveled)
-        local endpos  = pos + fwd * step
-        local tr      = util.TraceLine({ start=pos, endpos=endpos, filter=filter, mask=MASK_SHOT })
-
-        if tr.Hit then
-            hitTr    = tr
-            traveled = traveled + pos:Distance(tr.HitPos)
-            pos      = tr.HitPos
-            break
-        end
-
-        pos      = endpos
-        traveled = traveled + step
+if #ka52_gau_store.buffer == 0 then
+    for i = 1, ka52_gau_store.buffer_size do
+        ka52_gau_store.buffer[i] = {
+            hit               = true,
+            shooter           = NULL,
+            pos               = Vector(0,0,0),
+            old_pos           = Vector(0,0,0),
+            vel               = Vector(0,0,0),
+            old_vel           = Vector(0,0,0),
+            dir               = Vector(0,0,0),
+            speed             = 0,
+            damage            = 0,
+            distance_traveled = 0,
+            firer_ent         = NULL,
+            bullet_index      = 1,
+            hei_interval      = HEI_INTERVAL,
+            blast_radius      = BLAST_RADIUS,
+        }
     end
-
-    -- Place the entity at the final position so the trail starts there visually
-    local finalPos = hitTr and hitTr.HitPos or pos
-    self:SetPos(finalPos)
-
-    -- Attach a SpriteTrail from muzzle origin to impact point.
-    -- We position the entity at muzzle, let the trail grow as it moves to impact.
-    -- Actually: place entity at muzzle, move to impact in Think so trail renders.
-    self:SetPos(mpos)
-    self.bul_targetPos = finalPos
-    self.bul_hitTr     = hitTr
-    self.bul_startPos  = mpos
-    self.bul_startTime = CurTime()
-    -- How long the visual travel takes (purely cosmetic, fast but visible)
-    self.bul_travelTime = mpos:Distance(finalPos) / MUZZLE_VELOCITY
-
-    util.SpriteTrail(self, 0, Color(255, 200, 80, 255), true, 18, 0, 1.2, 1, "trails/laser")
-
-    self:NextThink(CurTime())
 end
 
-function ENT:Think()
-    local ct      = CurTime()
-    local elapsed = ct - self.bul_startTime
-    local frac    = math.Clamp(elapsed / math.max(self.bul_travelTime, 0.001), 0, 1)
+-- ============================================================
+-- Damage helpers
+-- ============================================================
+local BREAKABLE = {
+    ["func_breakable_surf"]      = true,
+    ["func_breakable"]           = true,
+    ["prop_physics"]             = true,
+    ["prop_physics_multiplayer"] = true,
+}
 
-    -- Move entity smoothly from muzzle to impact for trail rendering
-    local pos = LerpVector(frac, self.bul_startPos, self.bul_targetPos)
-    self:SetPos(pos)
+local function apply_damage(proj, tr, shooter)
+    local hit_ent = tr.Entity
+    local damage  = proj.damage
+    local fvec    = proj.dir * damage * FORCE_MUL
 
-    if frac >= 1 then
-        -- Bullet has visually arrived — apply damage and effects
-        if self.bul_hitTr then
-            self:OnImpact(self.bul_hitTr)
-        end
-        self:Remove()
+    if hit_ent:IsPlayer() or hit_ent:IsNPC() then
+        shooter:DispatchTraceAttack(tr, damage, fvec)
         return
     end
 
-    self:NextThink(ct + engine.TickInterval())
+    if BREAKABLE[hit_ent:GetClass()] then
+        shooter:FireBullets({
+            Src=tr.HitPos-proj.dir, Dir=proj.dir, Damage=damage,
+            Force=damage*FORCE_MUL, Distance=2, Num=1, Tracer=0, Inflictor=shooter
+        })
+        return
+    end
+
+    local dmg = DamageInfo()
+    dmg:SetDamage(damage)
+    dmg:SetAttacker(shooter)
+    dmg:SetInflictor(shooter)
+    dmg:SetDamageType(DMG_BULLET)
+    dmg:SetDamagePosition(tr.HitPos)
+    dmg:SetDamageForce(fvec)
+    hit_ent:TakeDamageInfo(dmg)
 end
 
-function ENT:OnImpact(tr)
+local function apply_impact_fx(proj, tr)
     local hitPos = tr.HitPos
-    local firer  = IsValid(self.bul_firer) and self.bul_firer or self
+    local shooter = IsValid(proj.firer_ent) and proj.firer_ent or proj.shooter
 
-    util.BlastDamage(firer, firer, hitPos + Vector(0,0,36), self.bul_radius, self.bul_damage)
+    -- blast damage
+    util.BlastDamage(shooter, shooter, hitPos + Vector(0,0,36), proj.blast_radius, proj.damage)
 
     local ed1 = EffectData()
     ed1:SetOrigin(hitPos) ed1:SetScale(1.5) ed1:SetMagnitude(1.5) ed1:SetRadius(40)
@@ -147,11 +132,132 @@ function ENT:OnImpact(tr)
 
     sound.Play(table.Random(IMPACT_SOUNDS), hitPos, 75, math.random(95,105), 0.8)
 
-    if self.bul_index % self.bul_heiInterval == 0 then self:SpawnHEI(hitPos) end
+    if proj.bullet_index % proj.hei_interval == 0 then
+        proj:SpawnHEI(hitPos)
+    end
+end
 
-    net.Start("ka52_bullet_remove")
-        net.WriteUInt(self:EntIndex(), 16)
-    net.Broadcast()
+-- ============================================================
+-- Per-tick movement (server)
+-- ============================================================
+local tick_interval = engine.TickInterval()
+
+local function move_projectile(proj)
+    if proj.hit then return true end
+    if proj.distance_traveled >= MAX_DIST then proj.hit = true return true end
+    if proj.speed <= MIN_SPEED then proj.hit = true return true end
+
+    local step    = proj.dir * (proj.speed * tick_interval)
+    local new_pos = proj.pos + step
+    local shooter = proj.shooter
+
+    local tr = util.TraceLine({
+        start  = proj.pos,
+        endpos = new_pos,
+        filter = IsValid(shooter) and { shooter } or nil,
+        mask   = MASK_SHOT,
+    })
+
+    proj.old_vel = proj.vel
+    proj.old_pos = proj.pos
+
+    if tr.Hit and not tr.HitSky then
+        proj.pos = tr.HitPos
+        proj.hit = true
+        if SERVER and IsValid(tr.Entity) and IsValid(shooter) then
+            apply_damage(proj, tr, shooter)
+        end
+        apply_impact_fx(proj, tr)
+        return true
+    end
+
+    proj.vel               = step
+    proj.pos               = new_pos
+    proj.distance_traveled = proj.distance_traveled + step:Length()
+    return false
+end
+
+hook.Add("Tick", "ka52_gau_move_sv", function()
+    local active = ka52_gau_store.active_projectiles
+    local count  = #active
+    local idx    = 1
+    while idx <= count do
+        if move_projectile(active[idx]) then
+            active[idx] = active[count]
+            active[count] = nil
+            count = count - 1
+        else
+            idx = idx + 1
+        end
+    end
+end)
+
+-- ============================================================
+-- Spawn / broadcast a new projectile
+-- ============================================================
+if SERVER then
+    util.AddNetworkString("ka52_gau_projectile")
+
+    function ka52_gau_spawn(shooter, firer_ent, pos, dir, bullet_index, hei_interval, blast_radius, blast_damage)
+        local store    = ka52_gau_store
+        local proj_idx = bit.band(store.last_idx, store.buffer_size - 1) + 1
+        local proj     = store.buffer[proj_idx]
+
+        proj.hit               = false
+        proj.shooter           = shooter
+        proj.firer_ent         = firer_ent
+        proj.pos               = Vector(pos.x, pos.y, pos.z)
+        proj.old_pos           = Vector(pos.x, pos.y, pos.z)
+        proj.dir               = Vector(dir.x, dir.y, dir.z)
+        proj.speed             = MUZZLE_VEL
+        proj.damage            = blast_damage or BLAST_DAMAGE
+        proj.blast_radius      = blast_radius or BLAST_RADIUS
+        proj.distance_traveled = 0
+        proj.bullet_index      = bullet_index or 1
+        proj.hei_interval      = hei_interval or HEI_INTERVAL
+        proj.vel               = proj.dir * proj.speed
+        proj.old_vel           = proj.dir * proj.speed
+
+        store.last_idx = store.last_idx + 1
+        store.active_projectiles[#store.active_projectiles + 1] = proj
+
+        net.Start("ka52_gau_projectile")
+            net.WriteVector(pos)
+            net.WriteVector(dir)
+        net.SendPVS(pos)
+    end
+end
+
+-- ============================================================
+-- Entity: anchor for sound + trail only, removed after 1 tick
+-- ============================================================
+function ENT:Initialize()
+    self:SetModel(BULLET_MODEL)
+    self:SetModelScale(3, 0)
+    self:SetMoveType(MOVETYPE_NONE)
+    self:SetSolid(SOLID_NONE)
+    self:SetCollisionGroup(COLLISION_GROUP_NONE)
+    self:DrawShadow(false)
+
+    local pos = self:GetPos()
+    local fwd = self:GetAngles():Forward()
+
+    sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or pos, 125, math.random(117, 125), 1.0)
+
+    -- Spawn the pure-Lua projectile
+    ka52_gau_spawn(
+        IsValid(self.Firer) and self.Firer or self,
+        self.Firer,
+        self.MuzzlePos or pos,
+        fwd,
+        self.BulletIndex   or 1,
+        self.HEIInterval   or HEI_INTERVAL,
+        self.BulletRad     or BLAST_RADIUS,
+        self.BulletDmg     or BLAST_DAMAGE
+    )
+
+    -- Entity no longer needed
+    self:Remove()
 end
 
 function ENT:SpawnHEI(groundPos)
