@@ -2,13 +2,14 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
-local BULLET_MODEL      = "models/weapons/bt_762.mdl"
-local MUZZLE_VELOCITY   = 25000
-local GRAVITY_SCALE     = 0.08
-local BLAST_RADIUS      = 80
-local BLAST_DAMAGE      = 40
-local HEI_INTERVAL      = 90
-local GAU_CAL_ID        = 3
+local BULLET_MODEL    = "models/weapons/bt_762.mdl"
+local MUZZLE_VELOCITY = 25000
+local BLAST_RADIUS    = 80
+local BLAST_DAMAGE    = 40
+local HEI_INTERVAL    = 90
+local GAU_CAL_ID      = 3
+local MAX_RANGE       = 32768   -- max travel distance per bullet
+local STEP_SIZE       = 2048    -- trace in chunks to avoid engine limits
 
 local IMPACT_SOUNDS = {
     "physics/concrete/impact_bullet1.wav",
@@ -32,27 +33,25 @@ util.PrecacheModel(BULLET_MODEL)
 function ENT:Initialize()
     self:SetModel(BULLET_MODEL)
     self:SetModelScale(3, 0)
-    self:SetMoveType(MOVETYPE_FLY)
+    self:SetMoveType(MOVETYPE_NONE)
     self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_NONE)
     self:DrawShadow(false)
-    self:SetGravity(0)
 
-    local fwd = self:GetAngles():Forward()
-    self:SetVelocity(fwd * MUZZLE_VELOCITY)
+    local origin = self:GetPos()
+    local fwd    = self:GetAngles():Forward()
 
     self.bul_firer       = self.Firer
     self.bul_damage      = self.BulletDmg   or BLAST_DAMAGE
     self.bul_radius      = self.BulletRad   or BLAST_RADIUS
     self.bul_index       = self.BulletIndex or 1
     self.bul_heiInterval = self.HEIInterval or HEI_INTERVAL
-    self.bul_spawnTime   = CurTime()
 
-    sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or self:GetPos(), 125, math.random(117, 125), 1.0)
+    -- Per-bullet fire sound
+    sound.Play(table.Random(FIRE_SOUNDS), self.MuzzlePos or origin, 125, math.random(117, 125), 1.0)
 
-    util.SpriteTrail(self, 0, Color(255, 200, 80, 255), true, 18, 0, 1.2, 1, "trails/laser")
-
-    local mpos = self.MuzzlePos or self:GetPos()
+    -- Net: muzzle flash position for client
+    local mpos = self.MuzzlePos or origin
     net.Start("ka52_bullet_tracer")
         net.WriteVector(mpos)
         net.WriteVector(fwd)
@@ -60,31 +59,69 @@ function ENT:Initialize()
         net.WriteUInt(self:EntIndex(), 16)
     net.Broadcast()
 
+    -- Trace the full bullet path right now, in chunks
+    local filter = { self }
+    if IsValid(self.bul_firer) then table.insert(filter, self.bul_firer) end
+
+    local pos      = origin
+    local traveled = 0
+    local hitTr    = nil
+
+    while traveled < MAX_RANGE do
+        local step    = math.min(STEP_SIZE, MAX_RANGE - traveled)
+        local endpos  = pos + fwd * step
+        local tr      = util.TraceLine({ start=pos, endpos=endpos, filter=filter, mask=MASK_SHOT })
+
+        if tr.Hit then
+            hitTr    = tr
+            traveled = traveled + pos:Distance(tr.HitPos)
+            pos      = tr.HitPos
+            break
+        end
+
+        pos      = endpos
+        traveled = traveled + step
+    end
+
+    -- Place the entity at the final position so the trail starts there visually
+    local finalPos = hitTr and hitTr.HitPos or pos
+    self:SetPos(finalPos)
+
+    -- Attach a SpriteTrail from muzzle origin to impact point.
+    -- We position the entity at muzzle, let the trail grow as it moves to impact.
+    -- Actually: place entity at muzzle, move to impact in Think so trail renders.
+    self:SetPos(mpos)
+    self.bul_targetPos = finalPos
+    self.bul_hitTr     = hitTr
+    self.bul_startPos  = mpos
+    self.bul_startTime = CurTime()
+    -- How long the visual travel takes (purely cosmetic, fast but visible)
+    self.bul_travelTime = mpos:Distance(finalPos) / MUZZLE_VELOCITY
+
+    util.SpriteTrail(self, 0, Color(255, 200, 80, 255), true, 18, 0, 1.2, 1, "trails/laser")
+
     self:NextThink(CurTime())
 end
 
 function ENT:Think()
-    local ct  = CurTime()
-    local pos = self:GetPos()
-    local dt  = engine.TickInterval()
+    local ct      = CurTime()
+    local elapsed = ct - self.bul_startTime
+    local frac    = math.Clamp(elapsed / math.max(self.bul_travelTime, 0.001), 0, 1)
 
-    local vel = self:GetVelocity()
-    vel.z = vel.z - (600 * GRAVITY_SCALE * dt)
-    self:SetVelocity(vel)
-    self:SetAngles(vel:Angle())
+    -- Move entity smoothly from muzzle to impact for trail rendering
+    local pos = LerpVector(frac, self.bul_startPos, self.bul_targetPos)
+    self:SetPos(pos)
 
-    local filter = { self }
-    if IsValid(self.bul_firer) then table.insert(filter, self.bul_firer) end
-    local tr = util.TraceLine({ start=pos, endpos=pos + vel * dt, filter=filter, mask=MASK_SHOT })
-    if tr.Hit or tr.HitSky then
-        self:OnImpact(tr) self:Remove() return
+    if frac >= 1 then
+        -- Bullet has visually arrived — apply damage and effects
+        if self.bul_hitTr then
+            self:OnImpact(self.bul_hitTr)
+        end
+        self:Remove()
+        return
     end
 
-    if not util.IsInWorld(pos) or (ct - self.bul_spawnTime) > 8 then
-        self:Remove() return
-    end
-
-    self:NextThink(ct + dt)
+    self:NextThink(ct + engine.TickInterval())
 end
 
 function ENT:OnImpact(tr)
