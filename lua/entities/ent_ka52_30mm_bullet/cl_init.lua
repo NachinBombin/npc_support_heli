@@ -27,9 +27,95 @@ if #ka52_gau_store.buffer == 0 then
             speed             = 0,
             damage            = 0,
             distance_traveled = 0,
+            ka52_wizz         = false,
         }
     end
 end
+
+-- ─── Passby logic ─────────────────────────────────────────────────────────────
+-- KA52EmitSound and ka52_passby_* aliases are in cl_ka52_passby_sounds.lua.
+-- Crossing detection:
+--   lateral_sign > 0  → listener is AHEAD  of bullet (hasn't passed yet)
+--   lateral_sign ≤ 0  → listener is BEHIND of bullet (already passed)
+--   A crossing fires the sound when sign_old > 0 AND sign_new ≤ 0.
+
+local KA52_PASSBY_COOLDOWN     = 0.18   -- slightly tighter than GAU; KA-52 fires slower
+local KA52_MAX_CONSIDER_DISTSQ = 3500 * 3500  -- 30mm has shorter range than GAU-8
+
+local ka52_passby_last_time = -99
+
+local function ka52_passby_emit(distance, position)
+    if distance < 256 then
+        KA52EmitSound("ka52_passby_50_close", position)
+    elseif distance < 768 then
+        if math.random(2) == 1 then
+            KA52EmitSound("ka52_passby_50_medium_2", position)
+        else
+            KA52EmitSound("ka52_passby_50_medium", position)
+        end
+    elseif distance < 2500 then
+        KA52EmitSound("ka52_passby_hiss_far", position)
+    else
+        KA52EmitSound("ka52_passby_50_far_2", position)
+    end
+end
+
+local function lateral_sign(bullet_pos, listener_pos, dir)
+    local d = listener_pos - bullet_pos
+    d:Normalize()
+    return dir:Dot(d)
+end
+
+local function ka52_check_passby(proj)
+    -- Skip first tick: old_pos == pos, zero-length segment.
+    if proj.distance_traveled == 0 then return end
+
+    local listener = LocalPlayer()
+    if not IsValid(listener) then return end
+
+    -- Suppress if riding the helicopter.
+    local view_ent = GetViewEntity()
+    if IsValid(view_ent) and not view_ent:IsPlayer() then return end
+
+    local listen_pos = listener:EyePos()
+
+    -- Broad-phase: squared-distance cull on segment midpoint.
+    local mid_x = (proj.old_pos.x + proj.pos.x) * 0.5
+    local mid_y = (proj.old_pos.y + proj.pos.y) * 0.5
+    local mid_z = (proj.old_pos.z + proj.pos.z) * 0.5
+    local dx = listen_pos.x - mid_x
+    local dy = listen_pos.y - mid_y
+    local dz = listen_pos.z - mid_z
+    if (dx*dx + dy*dy + dz*dz) > KA52_MAX_CONSIDER_DISTSQ then return end
+
+    local vn = proj.dir
+
+    local sign_old = lateral_sign(proj.old_pos, listen_pos, vn)
+    local sign_new = lateral_sign(proj.pos,     listen_pos, vn)
+
+    if sign_old <= 0 then
+        -- Listener was already behind old_pos: spawned past us, done.
+        proj.ka52_wizz = true
+        return
+    end
+
+    if sign_new > 0 then
+        -- Listener still ahead this tick, wait.
+        return
+    end
+
+    -- Crossing confirmed: old=ahead, new=behind.
+    proj.ka52_wizz = true
+
+    local now = UnPredictedCurTime()
+    if (now - ka52_passby_last_time) < KA52_PASSBY_COOLDOWN then return end
+    ka52_passby_last_time = now
+
+    local dist, closest_pos = util.DistanceToLine(proj.old_pos, proj.pos, listen_pos)
+    ka52_passby_emit(dist, closest_pos)
+end
+
+-- ─── Net receive ─────────────────────────────────────────────────────────────
 
 net.Receive("ka52_gau_projectile", function()
     local pos = net.ReadVector()
@@ -50,10 +136,13 @@ net.Receive("ka52_gau_projectile", function()
     proj.distance_traveled = 0
     proj.vel               = proj.dir * proj.speed
     proj.old_vel           = proj.dir * proj.speed
+    proj.ka52_wizz         = false
 
     store.last_idx = store.last_idx + 1
     store.active_projectiles[#store.active_projectiles + 1] = proj
 end)
+
+-- ─── Movement + passby tick ──────────────────────────────────────────────────
 
 local tick_interval = engine.TickInterval()
 local last_tick     = engine.TickCount()
@@ -76,6 +165,11 @@ local function move_cl()
             proj.vel      = step
             proj.pos      = new_pos
             proj.distance_traveled = proj.distance_traveled + step:Length()
+
+            if not proj.ka52_wizz then
+                ka52_check_passby(proj)
+            end
+
             idx = idx + 1
         end
     end
@@ -89,6 +183,8 @@ hook.Add("CreateMove", "ka52_gau_move_cl", function()
     end
 end)
 
+-- ─── Renderer ────────────────────────────────────────────────────────────────
+
 local function render_projectiles()
     local active = ka52_gau_store.active_projectiles
     local count  = #active
@@ -98,13 +194,12 @@ local function render_projectiles()
     local real_time    = UnPredictedCurTime()
     local cur_ticktime = engine.TickCount() * tick_interval
     local interp_frac  = math.Clamp((real_time - cur_ticktime) / tick_interval, 0, 2)
-    local min_trail    = 120   -- much longer minimum trail length
+    local min_trail    = 120
 
     for i = 1, count do
         local p = active[i]
         if p.hit then continue end
 
-        -- Hermite interpolation
         local render_pos = p.pos
         if interp_frac <= 1.0 then
             local t  = interp_frac
@@ -119,7 +214,6 @@ local function render_projectiles()
                        + p.vel               * (h4 * tick_interval)
         end
 
-        -- Trail tail: enforce long minimum
         local tail_end = p.old_pos or render_pos
         if p.vel then
             local vls = p.vel:LengthSqr()
@@ -132,21 +226,17 @@ local function render_projectiles()
         end
 
         local dist  = math.sqrt(cam_pos:DistToSqr(render_pos))
-        local scale = math.Clamp(dist / 1200, 1.5, 6)  -- much larger scale, closer falloff
+        local scale = math.Clamp(dist / 1200, 1.5, 6)
 
-        -- Wide hot-white core beam
         render.SetMaterial(mat_beam)
         if render_pos:DistToSqr(tail_end) > 4 then
-            render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 240, 180, 255))  -- bright white-orange core
+            render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 240, 180, 255))
         end
-
-        -- Outer orange glow beam (wider, more transparent)
         render.DrawBeam(tail_end, render_pos, 22 * scale, 0, 1, Color(255, 120, 0, 120))
 
-        -- Large glow sprite at tip
         render.SetMaterial(mat_glow)
-        render.DrawSprite(render_pos, 80 * scale, 80 * scale, Color(255, 160, 20, 200))  -- outer halo
-        render.DrawSprite(render_pos, 20 * scale, 20 * scale, Color(255, 255, 200, 255)) -- hot core
+        render.DrawSprite(render_pos, 80 * scale, 80 * scale, Color(255, 160, 20, 200))
+        render.DrawSprite(render_pos, 20 * scale, 20 * scale, Color(255, 255, 200, 255))
     end
 end
 
