@@ -27,6 +27,10 @@ local GAU_CAL_ID = 3
 
 local CFG_WeaponWindow = 8
 
+-- Peaceful mode timing (seconds)
+local PEACEFUL_MIN = 4
+local PEACEFUL_MAX = 7
+
 local CFG_MuzzlePoints = {
     Vector(110,   0, 93),
     Vector( 57, -84, 40),
@@ -261,6 +265,10 @@ function ENT:Initialize()
     self.VIKHR_MuzzleIndex  = 1
     self.MuzzleIndexGlobal  = 1
     self.TracerCounter      = 0
+    -- Peaceful mode state
+    self.IsPeaceful         = false
+    self.PeacefulUntil      = 0
+    self._PendingWeapon     = nil
 
     if not HasGred() then
         self:Debug("WARNING: Gredwitch Base not detected — HEI rounds disabled")
@@ -578,14 +586,33 @@ function ENT:SpawnMuzzleFX(worldPos)
 end
 
 -- ============================================================
--- WEAPON WINDOW CONTROLLER
+-- WEAPON CYCLE WITH PEACEFUL MODE
 -- ============================================================
 
 function ENT:HandleWeaponWindow(ct)
-    if not self.CurrentWeapon or ct >= self.WeaponWindowEnd then
-        self:PickNewWeapon(ct)
+    -- Gate 1: in peaceful cooldown — wait for PeacefulUntil, then arm
+    if self.IsPeaceful then
+        if ct >= self.PeacefulUntil then
+            self.IsPeaceful = false
+            self:ArmWeapon(self._PendingWeapon, ct)
+            self._PendingWeapon = nil
+        end
+        return  -- nothing fires while peaceful
     end
 
+    -- Gate 2: no weapon active yet (first call after spawn)
+    if not self.CurrentWeapon then
+        self:EnterPeaceful(ct)
+        return
+    end
+
+    -- Gate 3: weapon window expired — enter peaceful cooldown
+    if ct >= self.WeaponWindowEnd then
+        self:EnterPeaceful(ct)
+        return
+    end
+
+    -- Gate 4: dispatch to the active weapon updater
     if     self.CurrentWeapon == "30mm_burst"     then self:Update30mmBurstsSchedule(ct)
     elseif self.CurrentWeapon == "30mm_sustained" then self:Update30mmSustained(ct)
     elseif self.CurrentWeapon == "s8_salvo"       then self:UpdateS8Salvo(ct)
@@ -593,31 +620,41 @@ function ENT:HandleWeaponWindow(ct)
     end
 end
 
-function ENT:PickNewWeapon(ct)
-    local roll = math.random(1, 4)
-    if     roll == 1 then self.CurrentWeapon = "30mm_burst"
-    elseif roll == 2 then self.CurrentWeapon = "30mm_sustained"
-    elseif roll == 3 then self.CurrentWeapon = "s8_salvo"
-    else                   self.CurrentWeapon = "vikhr"
-    end
+-- Called at the end of every weapon window to begin the peaceful cooldown.
+function ENT:EnterPeaceful(ct)
+    self.CurrentWeapon  = nil
+    self.IsPeaceful     = true
+    self.PeacefulUntil  = ct + math.Rand(PEACEFUL_MIN, PEACEFUL_MAX)
+    self._PendingWeapon = self:RollWeapon()
+    self:Debug("Peaceful for " .. string.format("%.1f", self.PeacefulUntil - ct) .. "s, next: " .. self._PendingWeapon)
+end
 
+-- Rolls and returns a random weapon name string.
+function ENT:RollWeapon()
+    local roll = math.random(1, 4)
+    if     roll == 1 then return "30mm_burst"
+    elseif roll == 2 then return "30mm_sustained"
+    elseif roll == 3 then return "s8_salvo"
+    else                   return "vikhr"
+    end
+end
+
+-- Arms a weapon and opens its fire window. Called when peaceful cooldown expires.
+function ENT:ArmWeapon(weapon, ct)
+    weapon = weapon or self:RollWeapon()
+    self.CurrentWeapon   = weapon
     self.WeaponWindowEnd = ct + self.WeaponWindow
-    self:Debug("Weapon: " .. self.CurrentWeapon)
+    self:Debug("Armed: " .. self.CurrentWeapon)
 
     if self.CurrentWeapon == "30mm_burst" then
-        -- Build a schedule of TripletCount fire times, each separated by a random gap.
-        -- Each scheduled event will fire exactly 3 rounds (a triplet).
         self.GAU_BurstTimes   = {}
         self.GAU_BurstsFired  = 0
         self.GAU_ActiveBursts = {}
         local t = ct
         for i = 1, self.GAU_TripletCount do
-            -- First triplet fires immediately; subsequent ones after a random gap
             if i > 1 then
-                -- gap = time for previous triplet to finish (3 rounds * BurstDelay) + random pause
                 t = t + (3 * self.GAU_BurstDelay) + math.Rand(self.GAU_TripletGap_Min, self.GAU_TripletGap_Max)
             end
-            -- Only schedule triplets that fit inside the weapon window
             if t < self.WeaponWindowEnd then
                 self.GAU_BurstTimes[i] = t
             end
@@ -626,7 +663,6 @@ function ENT:PickNewWeapon(ct)
     elseif self.CurrentWeapon == "30mm_sustained" then
         self.NextShotTimeSpray    = ct
         self.SprayBulletCount     = 0
-        -- Pick an initial micro-burst length; pause state starts clear
         self.SprayBurstRoundsLeft = math.random(self.GAU_SprayBurstRounds_Min, self.GAU_SprayBurstRounds_Max)
         self.SprayPauseUntil      = 0
 
@@ -640,6 +676,11 @@ function ENT:PickNewWeapon(ct)
         self.VIKHR_NextShot    = ct + 0.5
         self.VIKHR_MuzzleIndex = 1
     end
+end
+
+-- Legacy shim kept for external callers / subclasses.
+function ENT:PickNewWeapon(ct)
+    self:EnterPeaceful(ct)
 end
 
 -- ============================================================
@@ -693,11 +734,9 @@ function ENT:StartGAUBurst()
     if sweepDir:LengthSqr() < 0.01 then sweepDir = Vector(1, 0, 0) end
     sweepDir:Normalize()
 
-    -- Store sweep ground target only — muzzle is computed live per bullet
     self.GAU_SweepStartPos = targetPos - sweepDir * self.GAU_SweepHalfLength
     self.GAU_SweepEndPos   = targetPos + sweepDir * self.GAU_SweepHalfLength
 
-    -- Each triplet burst is exactly 3 rounds
     table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime(), maxBullets = 3 })
 end
 
@@ -719,14 +758,12 @@ function ENT:UpdateActiveGAUBursts(ct)
 end
 
 function ENT:FireSingleGAUBullet(bulletIndex)
-    -- Muzzle computed LIVE from heli's current position every single bullet
     local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
 
     local impactPos
     if not self.GAU_SweepStartPos then
         impactPos = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
     else
-        -- For a 3-round triplet fraction goes 0, 0.5, 1 — a tight short sweep
         local fraction = math.Clamp((bulletIndex - 1) / 2, 0, 1)
         local base     = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
         local jitter   = Vector(
@@ -747,20 +784,16 @@ end
 function ENT:Update30mmSustained(ct)
     if ct >= self.WeaponWindowEnd then return end
 
-    -- In a pause between micro-bursts
     if ct < self.SprayPauseUntil then return end
 
-    -- Current micro-burst is exhausted — start a new pause and pick next burst length
     if self.SprayBurstRoundsLeft <= 0 then
         self.SprayPauseUntil      = ct + math.Rand(self.GAU_SprayPause_Min, self.GAU_SprayPause_Max)
         self.SprayBurstRoundsLeft = math.random(self.GAU_SprayBurstRounds_Min, self.GAU_SprayBurstRounds_Max)
         return
     end
 
-    -- Per-bullet rate gate
     if ct < self.NextShotTimeSpray then return end
 
-    -- Fire one round — re-aims at live target position each shot for accurate sustained fire
     local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
     self.NextShotTimeSpray    = ct + self.GAU_Spray_Delay
     self.SprayBulletCount     = self.SprayBulletCount + 1
