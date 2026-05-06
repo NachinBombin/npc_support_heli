@@ -35,16 +35,25 @@ local CFG_MuzzlePoints = {
     Vector( 87, 111, 37),
 }
 
-local CFG_GAU_BurstCount      = 30
-local CFG_GAU_BurstDelay      = 0.14
+-- Burst mode: each "burst event" fires exactly 3 rounds (a triplet)
+local CFG_GAU_BurstDelay       = 0.14   -- seconds between rounds within a triplet
+local CFG_GAU_TripletCount     = 5      -- how many triplets per weapon window
+local CFG_GAU_TripletGap_Min   = 0.6    -- min pause between triplets (seconds)
+local CFG_GAU_TripletGap_Max   = 1.4    -- max pause between triplets (seconds)
+
 local CFG_GAU_BulletDamage    = 40
 local CFG_GAU_BlastRadius     = 80
 local CFG_GAU_SweepHalfLength = 300
 local CFG_GAU_JitterAmount    = 400
-local CFG_GAU_FirstBurstTime  = 0
-local CFG_GAU_SecondBurstTime = 4
 local CFG_GAU_HEI_Interval    = 90
-local CFG_GAU_Spray_Delay     = 0.31
+
+-- Sustained (spray) mode
+local CFG_GAU_Spray_Delay          = 0.31  -- seconds between individual rounds
+local CFG_GAU_SprayJitter          = 120   -- tighter aim radius (was 300)
+local CFG_GAU_SprayBurstRounds_Min = 3     -- min rounds before a pause
+local CFG_GAU_SprayBurstRounds_Max = 7     -- max rounds before a pause
+local CFG_GAU_SprayPause_Min       = 0.45  -- min pause duration (seconds)
+local CFG_GAU_SprayPause_Max       = 0.85  -- max pause duration (seconds)
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -109,16 +118,24 @@ function ENT:Initialize()
     self.WeaponWindow = CFG_WeaponWindow
     self.MuzzlePoints = CFG_MuzzlePoints
 
-    self.GAU_BurstCount      = CFG_GAU_BurstCount
-    self.GAU_BurstDelay      = CFG_GAU_BurstDelay
-    self.GAU_BulletDamage    = CFG_GAU_BulletDamage
-    self.GAU_BlastRadius     = CFG_GAU_BlastRadius
-    self.GAU_SweepHalfLength = CFG_GAU_SweepHalfLength
-    self.GAU_JitterAmount    = CFG_GAU_JitterAmount
-    self.GAU_FirstBurstTime  = CFG_GAU_FirstBurstTime
-    self.GAU_SecondBurstTime = CFG_GAU_SecondBurstTime
-    self.GAU_HEI_Interval    = CFG_GAU_HEI_Interval
-    self.GAU_Spray_Delay     = CFG_GAU_Spray_Delay
+    -- Burst (triplet) mode config
+    self.GAU_BurstDelay         = CFG_GAU_BurstDelay
+    self.GAU_TripletCount       = CFG_GAU_TripletCount
+    self.GAU_TripletGap_Min     = CFG_GAU_TripletGap_Min
+    self.GAU_TripletGap_Max     = CFG_GAU_TripletGap_Max
+    self.GAU_BulletDamage       = CFG_GAU_BulletDamage
+    self.GAU_BlastRadius        = CFG_GAU_BlastRadius
+    self.GAU_SweepHalfLength    = CFG_GAU_SweepHalfLength
+    self.GAU_JitterAmount       = CFG_GAU_JitterAmount
+    self.GAU_HEI_Interval       = CFG_GAU_HEI_Interval
+
+    -- Sustained (spray) mode config
+    self.GAU_Spray_Delay          = CFG_GAU_Spray_Delay
+    self.GAU_SprayJitter          = CFG_GAU_SprayJitter
+    self.GAU_SprayBurstRounds_Min = CFG_GAU_SprayBurstRounds_Min
+    self.GAU_SprayBurstRounds_Max = CFG_GAU_SprayBurstRounds_Max
+    self.GAU_SprayPause_Min       = CFG_GAU_SprayPause_Min
+    self.GAU_SprayPause_Max       = CFG_GAU_SprayPause_Max
 
     self.S8_Delay        = CFG_S8_Delay
     self.S8_Count        = CFG_S8_Count
@@ -234,6 +251,8 @@ function ENT:Initialize()
     self.GAU_SweepEndPos    = nil
     self.NextShotTimeSpray  = 0
     self.SprayBulletCount   = 0
+    self.SprayBurstRoundsLeft = 0
+    self.SprayPauseUntil    = 0
     self.S8_ShotsFired      = 0
     self.S8_NextShot        = 0
     self.S8_MuzzleIndex     = 1
@@ -586,16 +605,36 @@ function ENT:PickNewWeapon(ct)
     self:Debug("Weapon: " .. self.CurrentWeapon)
 
     if self.CurrentWeapon == "30mm_burst" then
-        self.GAU_BurstTimes   = { ct + self.GAU_FirstBurstTime, ct + self.GAU_SecondBurstTime }
+        -- Build a schedule of TripletCount fire times, each separated by a random gap.
+        -- Each scheduled event will fire exactly 3 rounds (a triplet).
+        self.GAU_BurstTimes   = {}
         self.GAU_BurstsFired  = 0
         self.GAU_ActiveBursts = {}
+        local t = ct
+        for i = 1, self.GAU_TripletCount do
+            -- First triplet fires immediately; subsequent ones after a random gap
+            if i > 1 then
+                -- gap = time for previous triplet to finish (3 rounds * BurstDelay) + random pause
+                t = t + (3 * self.GAU_BurstDelay) + math.Rand(self.GAU_TripletGap_Min, self.GAU_TripletGap_Max)
+            end
+            -- Only schedule triplets that fit inside the weapon window
+            if t < self.WeaponWindowEnd then
+                self.GAU_BurstTimes[i] = t
+            end
+        end
+
     elseif self.CurrentWeapon == "30mm_sustained" then
-        self.NextShotTimeSpray = ct
-        self.SprayBulletCount  = 0
+        self.NextShotTimeSpray    = ct
+        self.SprayBulletCount     = 0
+        -- Pick an initial micro-burst length; pause state starts clear
+        self.SprayBurstRoundsLeft = math.random(self.GAU_SprayBurstRounds_Min, self.GAU_SprayBurstRounds_Max)
+        self.SprayPauseUntil      = 0
+
     elseif self.CurrentWeapon == "s8_salvo" then
         self.S8_ShotsFired  = 0
         self.S8_NextShot    = ct + 0.2
         self.S8_MuzzleIndex = 1
+
     elseif self.CurrentWeapon == "vikhr" then
         self.VIKHR_ShotsFired  = 0
         self.VIKHR_NextShot    = ct + 0.5
@@ -634,7 +673,7 @@ function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
 end
 
 -- ============================================================
--- SLOT 1 — 30mm BURST  (0.14s / bullet)
+-- SLOT 1 — 30mm BURST (triplets: always exactly 3 rounds per event)
 -- ============================================================
 
 function ENT:Update30mmBurstsSchedule(ct)
@@ -658,7 +697,8 @@ function ENT:StartGAUBurst()
     self.GAU_SweepStartPos = targetPos - sweepDir * self.GAU_SweepHalfLength
     self.GAU_SweepEndPos   = targetPos + sweepDir * self.GAU_SweepHalfLength
 
-    table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime() })
+    -- Each triplet burst is exactly 3 rounds
+    table.insert(self.GAU_ActiveBursts, { bulletsFired = 0, nextTime = CurTime(), maxBullets = 3 })
 end
 
 function ENT:UpdateActiveGAUBursts(ct)
@@ -671,7 +711,7 @@ function ENT:UpdateActiveGAUBursts(ct)
             burst.bulletsFired = burst.bulletsFired + 1
             burst.nextTime     = ct + self.GAU_BurstDelay
             self:FireSingleGAUBullet(burst.bulletsFired)
-            if burst.bulletsFired >= self.GAU_BurstCount then
+            if burst.bulletsFired >= burst.maxBullets then
                 table.remove(self.GAU_ActiveBursts, idx)
             end
         end
@@ -686,7 +726,8 @@ function ENT:FireSingleGAUBullet(bulletIndex)
     if not self.GAU_SweepStartPos then
         impactPos = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
     else
-        local fraction = math.Clamp((bulletIndex - 1) / math.max(self.GAU_BurstCount - 1, 1), 0, 1)
+        -- For a 3-round triplet fraction goes 0, 0.5, 1 — a tight short sweep
+        local fraction = math.Clamp((bulletIndex - 1) / 2, 0, 1)
         local base     = LerpVector(fraction, self.GAU_SweepStartPos, self.GAU_SweepEndPos)
         local jitter   = Vector(
             math.Rand(-self.GAU_JitterAmount, self.GAU_JitterAmount),
@@ -700,18 +741,33 @@ function ENT:FireSingleGAUBullet(bulletIndex)
 end
 
 -- ============================================================
--- SLOT 2 — 30mm SUSTAINED  (0.31s / bullet)
+-- SLOT 2 — 30mm SUSTAINED (dynamic pauses + tighter aim)
 -- ============================================================
 
 function ENT:Update30mmSustained(ct)
-    if ct < self.NextShotTimeSpray then return end
-    if ct >= self.WeaponWindowEnd  then return end
+    if ct >= self.WeaponWindowEnd then return end
 
-    -- Muzzle computed LIVE from heli's current position
+    -- In a pause between micro-bursts
+    if ct < self.SprayPauseUntil then return end
+
+    -- Current micro-burst is exhausted — start a new pause and pick next burst length
+    if self.SprayBurstRoundsLeft <= 0 then
+        self.SprayPauseUntil      = ct + math.Rand(self.GAU_SprayPause_Min, self.GAU_SprayPause_Max)
+        self.SprayBurstRoundsLeft = math.random(self.GAU_SprayBurstRounds_Min, self.GAU_SprayBurstRounds_Max)
+        return
+    end
+
+    -- Per-bullet rate gate
+    if ct < self.NextShotTimeSpray then return end
+
+    -- Fire one round — re-aims at live target position each shot for accurate sustained fire
     local muzzlePos = self:GetMuzzleWorldPos(self.MuzzlePoints[1])
-    self.NextShotTimeSpray = ct + self.GAU_Spray_Delay
-    self.SprayBulletCount  = self.SprayBulletCount + 1
-    local finalImpact = self:GetTargetGroundPos() + Vector(math.Rand(-300,300), math.Rand(-300,300), 0)
+    self.NextShotTimeSpray    = ct + self.GAU_Spray_Delay
+    self.SprayBulletCount     = self.SprayBulletCount + 1
+    self.SprayBurstRoundsLeft = self.SprayBurstRoundsLeft - 1
+
+    local jitter      = self.GAU_SprayJitter
+    local finalImpact = self:GetTargetGroundPos() + Vector(math.Rand(-jitter, jitter), math.Rand(-jitter, jitter), 0)
     self:SpawnPhysicalBullet(muzzlePos, finalImpact, self.SprayBulletCount)
 end
 
