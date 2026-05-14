@@ -2,12 +2,34 @@ include("shared.lua")
 include("cl_trailsystem.lua")
 
 -- ============================================================
+-- ENGINE SOUND (client-side CSoundPatch — loops correctly here)
+-- ============================================================
+
+local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
+
+-- ============================================================
 -- ROTOR
 -- ============================================================
 
 function ENT:Initialize()
     self.RPM  = 0
     self.RPM2 = 0
+
+    -- Start looping engine sound on the client
+    self._engineSnd = CreateSound( self, ENGINE_LOOP_SOUND )
+    if self._engineSnd then
+        self._engineSnd:SetSoundLevel( 110 )
+        self._engineSnd:ChangePitch( 100, 0 )
+        self._engineSnd:ChangeVolume( 1.0, 0.5 )
+        self._engineSnd:Play()
+    end
+end
+
+function ENT:OnRemove()
+    if self._engineSnd then
+        self._engineSnd:Stop()
+        self._engineSnd = nil
+    end
 end
 
 function ENT:Draw()

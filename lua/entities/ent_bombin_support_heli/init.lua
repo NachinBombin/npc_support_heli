@@ -12,8 +12,6 @@ end
 -- SOUNDS
 -- ============================================================
 
-local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
-
 local SOUNDS_S8_IGNITE   = { "S8.wav",   "S82.wav",   "S83.wav",   "S84.wav"   }
 local SOUNDS_ATGM_IGNITE = { "ATGM.wav", "ATGM2.wav", "ATGM3.wav", "ATGM4.wav" }
 local SOUNDS_LAUNCH      = { "launch1.wav", "launch2.wav" }
@@ -53,7 +51,7 @@ local CFG_GAU_HEI_Interval    = 90
 
 -- Sustained (spray) mode
 local CFG_GAU_Spray_Delay          = 0.31  -- seconds between individual rounds
-local CFG_GAU_SprayJitter          = 120   -- tighter aim radius (was 300)
+local CFG_GAU_SprayJitter          = 120   -- tighter aim radius
 local CFG_GAU_SprayBurstRounds_Min = 3     -- min rounds before a pause
 local CFG_GAU_SprayBurstRounds_Max = 7     -- max rounds before a pause
 local CFG_GAU_SprayPause_Min       = 0.45  -- min pause duration (seconds)
@@ -135,7 +133,7 @@ function ENT:Initialize()
 
     -- Sustained (spray) mode config
     self.GAU_Spray_Delay          = CFG_GAU_Spray_Delay
-    self.GAU_Spray_Jitter         = CFG_GAU_SprayJitter
+    self.GAU_SprayJitter          = CFG_GAU_SprayJitter      -- unified name, no underscore before Jitter
     self.GAU_SprayBurstRounds_Min = CFG_GAU_SprayBurstRounds_Min
     self.GAU_SprayBurstRounds_Max = CFG_GAU_SprayBurstRounds_Max
     self.GAU_SprayPause_Min       = CFG_GAU_SprayPause_Min
@@ -238,15 +236,6 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
-    -- Single engine loop (server-side CSoundPatch — same pattern as NFP Foxbat)
-    self._engineSnd = CreateSound( self, ENGINE_LOOP_SOUND )
-    if self._engineSnd then
-        self._engineSnd:SetSoundLevel( 110 )
-        self._engineSnd:ChangePitch( 100, 0 )
-        self._engineSnd:ChangeVolume( 1.0, 0.5 )
-        self._engineSnd:Play()
-    end
-
     self.CurrentWeapon      = nil
     self.WeaponWindowEnd    = 0
     self.GAU_BurstTimes     = {}
@@ -276,22 +265,6 @@ function ENT:Initialize()
     end
 
     self:Debug("Spawned at " .. tostring(spawnPos) .. " OrbitDirection=" .. self.OrbitDirection)
-end
-
--- ============================================================
--- SOUND STOP HELPER
--- ============================================================
-
-function ENT:StopEngineSound()
-    if not self._engineSnd then return end
-    local snd = self._engineSnd
-    self._engineSnd = nil  -- nil first so OnRemove won't double-stop
-    local FADE = 1.2
-    snd:ChangeVolume( 0, FADE )
-    snd:ChangePitch( 55, FADE + 0.3 )
-    timer.Simple( FADE + 0.15, function()
-        if snd then snd:Stop() end
-    end )
 end
 
 -- ============================================================
@@ -365,8 +338,6 @@ end
 function ENT:DestroyHeli()
     if self.IsDestroyed then return end
     self.IsDestroyed = true
-    -- Fade out engine sound before tumble so it doesn't cut abruptly
-    self:StopEngineSound()
     self:StartTumble()
     timer.Simple(12, function() if IsValid(self) then self:CrashExplode() end end)
 end
@@ -572,12 +543,11 @@ function ENT:GetTargetGroundPos()
 end
 
 -- Returns the current live world position of a local muzzle point.
--- Called fresh every bullet — never cached across a burst.
 function ENT:GetMuzzleWorldPos(localPoint)
     return self:LocalToWorld(localPoint)
 end
 
--- Vanilla muzzle flash — no gred dependency
+-- Vanilla muzzle flash
 function ENT:SpawnMuzzleFX(worldPos)
     local ed = EffectData()
     ed:SetOrigin(worldPos)
@@ -592,29 +562,25 @@ end
 -- ============================================================
 
 function ENT:HandleWeaponWindow(ct)
-    -- Gate 1: in peaceful cooldown — wait for PeacefulUntil, then arm
     if self.IsPeaceful then
         if ct >= self.PeacefulUntil then
             self.IsPeaceful = false
             self:ArmWeapon(self._PendingWeapon, ct)
             self._PendingWeapon = nil
         end
-        return  -- nothing fires while peaceful
+        return
     end
 
-    -- Gate 2: no weapon active yet (first call after spawn)
     if not self.CurrentWeapon then
         self:EnterPeaceful(ct)
         return
     end
 
-    -- Gate 3: weapon window expired — enter peaceful cooldown
     if ct >= self.WeaponWindowEnd then
         self:EnterPeaceful(ct)
         return
     end
 
-    -- Gate 4: dispatch to the active weapon updater
     if     self.CurrentWeapon == "30mm_burst"     then self:Update30mmBurstsSchedule(ct)
     elseif self.CurrentWeapon == "30mm_sustained" then self:Update30mmSustained(ct)
     elseif self.CurrentWeapon == "s8_salvo"       then self:UpdateS8Salvo(ct)
@@ -622,7 +588,6 @@ function ENT:HandleWeaponWindow(ct)
     end
 end
 
--- Called at the end of every weapon window to begin the peaceful cooldown.
 function ENT:EnterPeaceful(ct)
     self.CurrentWeapon  = nil
     self.IsPeaceful     = true
@@ -631,7 +596,6 @@ function ENT:EnterPeaceful(ct)
     self:Debug("Peaceful for " .. string.format("%.1f", self.PeacefulUntil - ct) .. "s, next: " .. self._PendingWeapon)
 end
 
--- Rolls and returns a random weapon name string.
 function ENT:RollWeapon()
     local roll = math.random(1, 4)
     if     roll == 1 then return "30mm_burst"
@@ -641,7 +605,6 @@ function ENT:RollWeapon()
     end
 end
 
--- Arms a weapon and opens its fire window. Called when peaceful cooldown expires.
 function ENT:ArmWeapon(weapon, ct)
     weapon = weapon or self:RollWeapon()
     self.CurrentWeapon   = weapon
@@ -680,7 +643,6 @@ function ENT:ArmWeapon(weapon, ct)
     end
 end
 
--- Legacy shim kept for external callers / subclasses.
 function ENT:PickNewWeapon(ct)
     self:EnterPeaceful(ct)
 end
@@ -716,7 +678,7 @@ function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
 end
 
 -- ============================================================
--- SLOT 1 — 30mm BURST (triplets: always exactly 3 rounds per event)
+-- SLOT 1 — 30mm BURST (triplets)
 -- ============================================================
 
 function ENT:Update30mmBurstsSchedule(ct)
@@ -780,7 +742,7 @@ function ENT:FireSingleGAUBullet(bulletIndex)
 end
 
 -- ============================================================
--- SLOT 2 — 30mm SUSTAINED (dynamic pauses + tighter aim)
+-- SLOT 2 — 30mm SUSTAINED
 -- ============================================================
 
 function ENT:Update30mmSustained(ct)
@@ -940,10 +902,5 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    -- _engineSnd is already nil if StopEngineSound() ran first (DestroyHeli path).
-    -- This handles the lifetime-expiry / external Remove() path.
-    if self._engineSnd then
-        self._engineSnd:Stop()
-        self._engineSnd = nil
-    end
+    -- server side has nothing to clean up for sound (client handles it)
 end
