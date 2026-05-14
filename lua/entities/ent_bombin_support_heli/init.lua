@@ -104,6 +104,70 @@ local function BroadcastTier(ent, tier)
 end
 
 -- ============================================================
+-- GIB SYSTEM
+-- Staggered 0.1 s per piece to avoid a bulk-spawn physics spike.
+-- Ignite deferred one tick (timer.Simple(0)) after Activate() --
+-- this is the only reliable pattern for entity fire in GMod.
+-- ============================================================
+
+local GIB_MODELS = {
+    "models/crysis/heli/wz19_debris/asian_helicopter_destroyed.mdl",
+    "models/crysis/heli/wz19_debris/asian_helicopter_destroyed_tail.mdl",
+}
+local GIB_LIFETIME = 40
+
+local function SpawnGibs(origin)
+    for idx, mdl in ipairs(GIB_MODELS) do
+        timer.Simple((idx - 1) * 0.1, function()
+            local pos = origin + Vector(
+                math.Rand(-120, 120),
+                math.Rand(-120, 120),
+                math.Rand(  20,  80)
+            )
+            if not util.IsInWorld(pos) then pos = origin end
+
+            local gib = ents.Create("prop_physics")
+            if not IsValid(gib) then return end
+
+            gib:SetModel(mdl)
+            gib:SetPos(pos)
+            gib:SetAngles(Angle(math.Rand(0, 360), math.Rand(0, 360), math.Rand(0, 360)))
+            gib:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+            gib:Spawn()
+            gib:Activate()
+
+            local phys = gib:GetPhysicsObject()
+            if IsValid(phys) then
+                phys:SetMass(1500)
+                phys:SetDragCoefficient(0)
+                phys:SetAngleDragCoefficient(0)
+                phys:EnableGravity(true)
+                phys:Wake()
+                phys:ApplyForceCenter(Vector(
+                    math.Rand(-400, 400),
+                    math.Rand(-400, 400),
+                    math.Rand( 200, 700)
+                ) * 1800)
+                phys:ApplyTorqueCenter(Vector(
+                    math.Rand(-1500, 1500),
+                    math.Rand(-1500, 1500),
+                    math.Rand(-1500, 1500)
+                ))
+            end
+
+            -- Must be deferred by one tick after Activate()
+            timer.Simple(0, function()
+                if IsValid(gib) then gib:Ignite(GIB_LIFETIME, 0) end
+            end)
+
+            timer.Simple(GIB_LIFETIME, function()
+                if IsValid(gib) then gib:Remove() end
+            end)
+        end)
+    end
+end
+
+-- ============================================================
 -- INITIALIZE
 -- ============================================================
 
@@ -332,6 +396,9 @@ function ENT:CrashExplode()
     sound.Play("ambient/explosions/explode_8.wav", pos, 140, 90, 1.0)
     sound.Play("weapon_AWP.Single",               pos, 145, 60, 1.0)
     util.BlastDamage(self, self, pos, 400, 200)
+
+    SpawnGibs(pos)
+
     self:Remove()
 end
 
