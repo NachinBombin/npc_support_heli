@@ -12,7 +12,8 @@ end
 -- SOUNDS
 -- ============================================================
 
-local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
+-- ENGINE_LOOP_SOUND is now managed entirely on the client (cl_init.lua)
+-- to ensure CSoundPatch looping works correctly.
 
 local SOUNDS_S8_IGNITE   = { "S8.wav",   "S82.wav",   "S83.wav",   "S84.wav"   }
 local SOUNDS_ATGM_IGNITE = { "ATGM.wav", "ATGM2.wav", "ATGM3.wav", "ATGM4.wav" }
@@ -135,7 +136,7 @@ function ENT:Initialize()
 
     -- Sustained (spray) mode config
     self.GAU_Spray_Delay          = CFG_GAU_Spray_Delay
-    self.GAU_SprayJitter          = CFG_GAU_SprayJitter
+    self.GAU_Spray_Jitter         = CFG_GAU_SprayJitter
     self.GAU_SprayBurstRounds_Min = CFG_GAU_SprayBurstRounds_Min
     self.GAU_SprayBurstRounds_Max = CFG_GAU_SprayBurstRounds_Max
     self.GAU_SprayPause_Min       = CFG_GAU_SprayPause_Min
@@ -238,13 +239,7 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
-    self.EngineLoop = CreateSound(self, ENGINE_LOOP_SOUND)
-    if self.EngineLoop then
-        self.EngineLoop:SetSoundLevel(120)
-        self.EngineLoop:ChangePitch(100, 0)
-        self.EngineLoop:ChangeVolume(1.0, 0.5)
-        self.EngineLoop:Play()
-    end
+    -- Engine sound is now fully client-side (see cl_init.lua)
 
     self.CurrentWeapon      = nil
     self.WeaponWindowEnd    = 0
@@ -275,22 +270,6 @@ function ENT:Initialize()
     end
 
     self:Debug("Spawned at " .. tostring(spawnPos) .. " OrbitDirection=" .. self.OrbitDirection)
-end
-
--- ============================================================
--- SOUND STOP HELPER
--- ============================================================
-
-function ENT:StopEngineSound()
-    if not self.EngineLoop then return end
-    local snd = self.EngineLoop
-    self.EngineLoop = nil
-    local FADE = 1.5
-    snd:ChangeVolume(0, FADE)
-    snd:ChangePitch(55, FADE + 0.5)
-    timer.Simple(FADE + 0.2, function()
-        if snd then snd:Stop() end
-    end)
 end
 
 -- ============================================================
@@ -364,7 +343,7 @@ end
 function ENT:DestroyHeli()
     if self.IsDestroyed then return end
     self.IsDestroyed = true
-    self:StopEngineSound()
+    -- Engine sound fade is handled on the client via ENT:OnRemove() in cl_init.lua
     self:StartTumble()
     timer.Simple(12, function() if IsValid(self) then self:CrashExplode() end end)
 end
@@ -938,8 +917,5 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    if self.EngineLoop then
-        self.EngineLoop:Stop()
-        self.EngineLoop = nil
-    end
+    -- Engine sound cleanup is handled clientside in cl_init.lua
 end

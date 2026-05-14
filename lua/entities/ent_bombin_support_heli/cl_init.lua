@@ -16,6 +16,7 @@ end
 
 function ENT:Think()
     self:AnimRotor()
+    self:UpdateEngineSound()
 end
 
 function ENT:AnimRotor()
@@ -33,6 +34,33 @@ function ENT:AnimRotor()
     -- Bone 11 = lower coaxial disc (CCW), Bone 12 = upper coaxial disc (CW)
     self:ManipulateBoneAngles( 11, -Rot1 )
     self:ManipulateBoneAngles( 12,  Rot2 )
+end
+
+-- ============================================================
+-- ENGINE LOOP SOUND (client-side CSoundPatch for true looping)
+-- ============================================================
+
+local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
+
+function ENT:UpdateEngineSound()
+    -- Start the loop the first time Think fires
+    if not self._engineSnd then
+        self._engineSnd = CreateSound( self, ENGINE_LOOP_SOUND )
+        if self._engineSnd then
+            self._engineSnd:SetSoundLevel( 120 )
+            self._engineSnd:ChangePitch( 100, 0 )
+            self._engineSnd:ChangeVolume( 1.0, 0.5 )
+            self._engineSnd:Play()
+        end
+        self._engineSndStarted = true
+    end
+end
+
+function ENT:OnRemove()
+    if self._engineSnd then
+        self._engineSnd:Stop()
+        self._engineSnd = nil
+    end
 end
 
 -- ============================================================
