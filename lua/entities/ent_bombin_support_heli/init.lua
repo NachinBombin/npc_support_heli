@@ -25,7 +25,6 @@ local GAU_CAL_ID = 3
 
 local CFG_WeaponWindow = 8
 
--- Peaceful mode timing (seconds)
 local PEACEFUL_MIN = 4
 local PEACEFUL_MAX = 7
 
@@ -37,11 +36,10 @@ local CFG_MuzzlePoints = {
     Vector( 87, 111, 37),
 }
 
--- Burst mode: each "burst event" fires exactly 3 rounds (a triplet)
-local CFG_GAU_BurstDelay       = 0.14   -- seconds between rounds within a triplet
-local CFG_GAU_TripletCount     = 5      -- how many triplets per weapon window
-local CFG_GAU_TripletGap_Min   = 0.6    -- min pause between triplets (seconds)
-local CFG_GAU_TripletGap_Max   = 1.4    -- max pause between triplets (seconds)
+local CFG_GAU_BurstDelay       = 0.14
+local CFG_GAU_TripletCount     = 5
+local CFG_GAU_TripletGap_Min   = 0.6
+local CFG_GAU_TripletGap_Max   = 1.4
 
 local CFG_GAU_BulletDamage    = 40
 local CFG_GAU_BlastRadius     = 80
@@ -49,13 +47,12 @@ local CFG_GAU_SweepHalfLength = 300
 local CFG_GAU_JitterAmount    = 400
 local CFG_GAU_HEI_Interval    = 90
 
--- Sustained (spray) mode
-local CFG_GAU_Spray_Delay          = 0.31  -- seconds between individual rounds
-local CFG_GAU_SprayJitter          = 120   -- tighter aim radius
-local CFG_GAU_SprayBurstRounds_Min = 3     -- min rounds before a pause
-local CFG_GAU_SprayBurstRounds_Max = 7     -- max rounds before a pause
-local CFG_GAU_SprayPause_Min       = 0.45  -- min pause duration (seconds)
-local CFG_GAU_SprayPause_Max       = 0.85  -- max pause duration (seconds)
+local CFG_GAU_Spray_Delay          = 0.31
+local CFG_GAU_SprayJitter          = 120
+local CFG_GAU_SprayBurstRounds_Min = 3
+local CFG_GAU_SprayBurstRounds_Max = 7
+local CFG_GAU_SprayPause_Min       = 0.45
+local CFG_GAU_SprayPause_Max       = 0.85
 
 local CFG_S8_Delay   = 0.15
 local CFG_S8_Count   = 22
@@ -104,70 +101,6 @@ local function BroadcastTier(ent, tier)
 end
 
 -- ============================================================
--- GIB SYSTEM
--- Staggered 0.1 s per piece to avoid a bulk-spawn physics spike.
--- Ignite deferred one tick (timer.Simple(0)) after Activate() --
--- this is the only reliable pattern for entity fire in GMod.
--- ============================================================
-
-local GIB_MODELS = {
-    "models/crysis/heli/wz19_debris/asian_helicopter_destroyed.mdl",
-    "models/crysis/heli/wz19_debris/asian_helicopter_destroyed_tail.mdl",
-}
-local GIB_LIFETIME = 40
-
-local function SpawnGibs(origin)
-    for idx, mdl in ipairs(GIB_MODELS) do
-        timer.Simple((idx - 1) * 0.1, function()
-            local pos = origin + Vector(
-                math.Rand(-120, 120),
-                math.Rand(-120, 120),
-                math.Rand(  20,  80)
-            )
-            if not util.IsInWorld(pos) then pos = origin end
-
-            local gib = ents.Create("prop_physics")
-            if not IsValid(gib) then return end
-
-            gib:SetModel(mdl)
-            gib:SetPos(pos)
-            gib:SetAngles(Angle(math.Rand(0, 360), math.Rand(0, 360), math.Rand(0, 360)))
-            gib:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
-            gib:Spawn()
-            gib:Activate()
-
-            local phys = gib:GetPhysicsObject()
-            if IsValid(phys) then
-                phys:SetMass(1500)
-                phys:SetDragCoefficient(0)
-                phys:SetAngleDragCoefficient(0)
-                phys:EnableGravity(true)
-                phys:Wake()
-                phys:ApplyForceCenter(Vector(
-                    math.Rand(-400, 400),
-                    math.Rand(-400, 400),
-                    math.Rand( 200, 700)
-                ) * 1800)
-                phys:ApplyTorqueCenter(Vector(
-                    math.Rand(-1500, 1500),
-                    math.Rand(-1500, 1500),
-                    math.Rand(-1500, 1500)
-                ))
-            end
-
-            -- Must be deferred by one tick after Activate()
-            timer.Simple(0, function()
-                if IsValid(gib) then gib:Ignite(GIB_LIFETIME, 0) end
-            end)
-
-            timer.Simple(GIB_LIFETIME, function()
-                if IsValid(gib) then gib:Remove() end
-            end)
-        end)
-    end
-end
-
--- ============================================================
 -- INITIALIZE
 -- ============================================================
 
@@ -184,7 +117,6 @@ function ENT:Initialize()
     self.WeaponWindow = CFG_WeaponWindow
     self.MuzzlePoints = CFG_MuzzlePoints
 
-    -- Burst (triplet) mode config
     self.GAU_BurstDelay         = CFG_GAU_BurstDelay
     self.GAU_TripletCount       = CFG_GAU_TripletCount
     self.GAU_TripletGap_Min     = CFG_GAU_TripletGap_Min
@@ -195,9 +127,8 @@ function ENT:Initialize()
     self.GAU_JitterAmount       = CFG_GAU_JitterAmount
     self.GAU_HEI_Interval       = CFG_GAU_HEI_Interval
 
-    -- Sustained (spray) mode config
     self.GAU_Spray_Delay          = CFG_GAU_Spray_Delay
-    self.GAU_SprayJitter          = CFG_GAU_SprayJitter      -- unified name, no underscore before Jitter
+    self.GAU_SprayJitter          = CFG_GAU_SprayJitter
     self.GAU_SprayBurstRounds_Min = CFG_GAU_SprayBurstRounds_Min
     self.GAU_SprayBurstRounds_Max = CFG_GAU_SprayBurstRounds_Max
     self.GAU_SprayPause_Min       = CFG_GAU_SprayPause_Min
@@ -300,6 +231,15 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity(false)
     end
 
+    -- Engine loop: same pattern as AC-130 (server-side CreateSound)
+    self.IdleLoop = CreateSound(self, "npc_ka52/ka50engine.wav")
+    if self.IdleLoop then
+        self.IdleLoop:SetSoundLevel(110)
+        self.IdleLoop:ChangePitch(100, 0)
+        self.IdleLoop:ChangeVolume(1.0, 0)
+        self.IdleLoop:Play()
+    end
+
     self.CurrentWeapon      = nil
     self.WeaponWindowEnd    = 0
     self.GAU_BurstTimes     = {}
@@ -319,7 +259,6 @@ function ENT:Initialize()
     self.VIKHR_MuzzleIndex  = 1
     self.MuzzleIndexGlobal  = 1
     self.TracerCounter      = 0
-    -- Peaceful mode state
     self.IsPeaceful         = false
     self.PeacefulUntil      = 0
     self._PendingWeapon     = nil
@@ -396,15 +335,13 @@ function ENT:CrashExplode()
     sound.Play("ambient/explosions/explode_8.wav", pos, 140, 90, 1.0)
     sound.Play("weapon_AWP.Single",               pos, 145, 60, 1.0)
     util.BlastDamage(self, self, pos, 400, 200)
-
-    SpawnGibs(pos)
-
     self:Remove()
 end
 
 function ENT:DestroyHeli()
     if self.IsDestroyed then return end
     self.IsDestroyed = true
+    if self.IdleLoop then self.IdleLoop:Stop() self.IdleLoop = nil end
     self:StartTumble()
     timer.Simple(12, function() if IsValid(self) then self:CrashExplode() end end)
 end
@@ -609,12 +546,10 @@ function ENT:GetTargetGroundPos()
     return tr.HitPos
 end
 
--- Returns the current live world position of a local muzzle point.
 function ENT:GetMuzzleWorldPos(localPoint)
     return self:LocalToWorld(localPoint)
 end
 
--- Vanilla muzzle flash
 function ENT:SpawnMuzzleFX(worldPos)
     local ed = EffectData()
     ed:SetOrigin(worldPos)
@@ -745,7 +680,7 @@ function ENT:SpawnPhysicalBullet(muzzlePos, impactPos, bulletIndex)
 end
 
 -- ============================================================
--- SLOT 1 — 30mm BURST (triplets)
+-- SLOT 1 — 30mm BURST
 -- ============================================================
 
 function ENT:Update30mmBurstsSchedule(ct)
@@ -969,5 +904,5 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-    -- server side has nothing to clean up for sound (client handles it)
+    if self.IdleLoop then self.IdleLoop:Stop() self.IdleLoop = nil end
 end

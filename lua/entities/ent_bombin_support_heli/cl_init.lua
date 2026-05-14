@@ -2,34 +2,12 @@ include("shared.lua")
 include("cl_trailsystem.lua")
 
 -- ============================================================
--- ENGINE SOUND (client-side CSoundPatch — loops correctly here)
--- ============================================================
-
-local ENGINE_LOOP_SOUND = "npc_ka52/ka50engine.wav"
-
--- ============================================================
 -- ROTOR
 -- ============================================================
 
 function ENT:Initialize()
     self.RPM  = 0
     self.RPM2 = 0
-
-    -- Start looping engine sound on the client
-    self._engineSnd = CreateSound( self, ENGINE_LOOP_SOUND )
-    if self._engineSnd then
-        self._engineSnd:SetSoundLevel( 110 )
-        self._engineSnd:ChangePitch( 100, 0 )
-        self._engineSnd:ChangeVolume( 1.0, 0.5 )
-        self._engineSnd:Play()
-    end
-end
-
-function ENT:OnRemove()
-    if self._engineSnd then
-        self._engineSnd:Stop()
-        self._engineSnd = nil
-    end
 end
 
 function ENT:Draw()
@@ -52,7 +30,6 @@ function ENT:AnimRotor()
     local Rot1 = Angle( 0, self.RPM,  0 )
     local Rot2 = Angle( 0, self.RPM2, 0 )
 
-    -- Bone 11 = lower coaxial disc (CCW), Bone 12 = upper coaxial disc (CW)
     self:ManipulateBoneAngles( 11, -Rot1 )
     self:ManipulateBoneAngles( 12,  Rot2 )
 end
@@ -65,8 +42,6 @@ PrecacheParticleSystem( "fire_medium_02" )
 
 -- ============================================================
 -- DAMAGE TIERS
--- Tier 1: smoke/1 fire.   Tier 2: 3 fires.
--- Tier 3: 6 fires + rotor-tip and belly bursts
 -- ============================================================
 
 local TIER_OFFSETS = {
@@ -93,9 +68,6 @@ local TIER_BURST_COUNT = { [1] = 1,   [2] = 2,   [3] = 4   }
 
 local HeliStates = {}
 
--- ============================================================
--- BURST FX
--- ============================================================
 local function BurstAt( wPos, tier )
     local ed = EffectData()
     ed:SetOrigin( wPos )
@@ -147,9 +119,6 @@ local function SpawnBurstFX( ent, count, tier )
     end
 end
 
--- ============================================================
--- PARTICLE MANAGEMENT
--- ============================================================
 local function StopParticles( state )
     if not state.particles then return end
     for _, p in ipairs( state.particles ) do
@@ -174,15 +143,11 @@ local function ApplyFlameParticles( ent, state, tier )
     state.nextBurst = CurTime() + ( TIER_BURST_DELAY[tier] or 4 )
 end
 
--- ============================================================
--- NET
--- ============================================================
 net.Receive( "bombin_plane_damage_tier", function()
     local entIndex = net.ReadUInt( 16 )
     local tier     = net.ReadUInt( 2 )
     local ent      = Entity( entIndex )
 
-    -- Trail system tier update
     HeliTrailSystem_SetTier( entIndex, tier )
 
     local state = HeliStates[entIndex]
@@ -202,9 +167,6 @@ net.Receive( "bombin_plane_damage_tier", function()
     end
 end )
 
--- ============================================================
--- THINK HOOK (damage FX tracking)
--- ============================================================
 hook.Add( "Think", "bombin_heli_damage_fx", function()
     local ct = CurTime()
     for entIndex, state in pairs( HeliStates ) do
