@@ -76,6 +76,27 @@ local CFG_FadeDuration = 2.0
 local CFG_MaxHP        = 3100
 
 -- ============================================================
+-- OBSTACLE EVASION CONSTANTS
+-- No handedness — evasion yaw is chosen by scoring all candidate
+-- headings and picking the one with the clearest path.
+-- ============================================================
+local PROBE_FORWARD  = 3200   -- forward lookahead
+local PROBE_DIAG     = 2400   -- 45-deg diagonals
+local PROBE_SIDE     = 1600   -- pure lateral
+local PROBE_UP       = 900
+local PROBE_DOWN     = 700
+local PROBE_MASK     = MASK_SOLID_BRUSHONLY
+
+local EVASION_BLEND  = 0.14   -- how fast we steer toward the evasion yaw
+local EVASION_PITCH_NUDGE = 0.12   -- deg/tick added when up/down blocked
+local EVASION_PITCH_MAX   = 8
+local CLEAR_TIME     = 2.5    -- seconds of clear probes before evasion ends
+
+-- Candidate headings (relative to current yaw, degrees) scored during evasion.
+-- Even spread → no left/right bias.
+local EVASION_CANDIDATES = { 0, 45, 90, 135, 180, 225, 270, 315 }
+
+-- ============================================================
 -- NET STRING
 -- ============================================================
 util.AddNetworkString("bombin_plane_damage_tier")
@@ -155,6 +176,7 @@ function ENT:Initialize()
     self.DieTime   = CurTime() + self.Lifetime
     self.SpawnTime = CurTime()
 
+    -- Orbit direction is random (fully polar-free). +1 = CCW, -1 = CW.
     self.OrbitDirection = (math.random(2) == 1) and 1 or -1
 
     local outward = VectorRand()
@@ -215,6 +237,12 @@ function ENT:Initialize()
     self.SmoothedRoll  = 0
     self.SmoothedPitch = 0
 
+    -- Evasion state
+    self.IsEvading        = false
+    self.EvasionYaw       = self.flightYaw
+    self.EvasionPitch     = 0
+    self.EvasionClearT    = 0
+
     self.IsTumbling        = false
     self.TumbleStartTime   = 0
     self.TumbleGroundZ     = ground
@@ -229,9 +257,10 @@ function ENT:Initialize()
     if IsValid(self.PhysObj) then
         self.PhysObj:Wake()
         self.PhysObj:EnableGravity(false)
+        self.PhysObj:SetMass(1e8)
+        self.PhysObj:SetDamping(1, 1)
     end
 
-    -- Engine loop: same pattern as AC-130 (server-side CreateSound)
     self.IdleLoop = CreateSound(self, "npc_ka52/ka50engine.wav")
     if self.IdleLoop then
         self.IdleLoop:SetSoundLevel(110)
@@ -268,6 +297,132 @@ function ENT:Initialize()
     end
 
     self:Debug("Spawned at " .. tostring(spawnPos) .. " OrbitDirection=" .. self.OrbitDirection)
+end
+
+-- ============================================================
+-- OBSTACLE EVASION — POLAR-FREE
+-- No hardcoded left/right nudge. All eight cardinal+diagonal
+-- headings are probed and scored; the clearest wins.
+-- ============================================================
+
+function ENT:RunObstacleProbes()
+    local pos  = self:GetPos()
+    local yaw  = Angle(0, self.flightYaw, 0)
+    local fwd  = yaw:Forward()
+    local rgt  = yaw:Right()
+    local up   = Vector(0, 0, 1)
+
+    local fwdL = (fwd - rgt):GetNormalized()
+    local fwdR = (fwd + rgt):GetNormalized()
+
+    local function probe(endpos)
+        return util.TraceLine({ start = pos, endpos = endpos, filter = self, mask = PROBE_MASK })
+    end
+
+    local hitFwd   = probe(pos + fwd  * PROBE_FORWARD).Hit
+    local hitFwdL  = probe(pos + fwdL * PROBE_DIAG).Hit
+    local hitFwdR  = probe(pos + fwdR * PROBE_DIAG).Hit
+    local hitLeft  = probe(pos - rgt  * PROBE_SIDE).Hit
+    local hitRight = probe(pos + rgt  * PROBE_SIDE).Hit
+    local hitUp    = probe(pos + up   * PROBE_UP).Hit
+    local hitDown  = probe(pos - up   * PROBE_DOWN).Hit
+
+    local anyHit = hitFwd or hitFwdL or hitFwdR or hitLeft or hitRight or hitUp or hitDown
+
+    return anyHit, hitUp, hitDown, hitLeft, hitRight, hitFwdL, hitFwdR
+end
+
+function ENT:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
+    -- Score all 8 candidate headings (relative to current flightYaw).
+    -- A heading gets a penalty if it points toward a blocked probe direction.
+    -- The heading with the LOWEST penalty wins.
+    -- Equal penalties → pick randomly (no inherent hand bias).
+    local pos    = self:GetPos()
+    local best   = nil
+    local bestPenalty = math.huge
+    local bestList   = {}
+
+    for _, offset in ipairs(EVASION_CANDIDATES) do
+        local testYaw = math.NormalizeAngle(self.flightYaw + offset)
+        local testFwd = Angle(0, testYaw, 0):Forward()
+        testFwd.z = 0
+        testFwd:Normalize()
+
+        local penalty = 0
+        -- penalise headings that point into known blocked directions
+        local fwdRef  = Angle(0, self.flightYaw, 0):Forward(); fwdRef.z = 0; fwdRef:Normalize()
+        local rgtRef  = Angle(0, self.flightYaw, 0):Right();   rgtRef.z = 0; rgtRef:Normalize()
+
+        local dotFwd  = testFwd:Dot(fwdRef)
+        local dotRgt  = testFwd:Dot(rgtRef)
+
+        if hitFwdL  and dotFwd > 0.3  and dotRgt < -0.3 then penalty = penalty + 2 end
+        if hitFwdR  and dotFwd > 0.3  and dotRgt >  0.3 then penalty = penalty + 2 end
+        if hitLeft  and dotRgt < -0.6 then penalty = penalty + 3 end
+        if hitRight and dotRgt >  0.6 then penalty = penalty + 3 end
+
+        -- cast a quick trace in this candidate direction as a final confirmation
+        local tr = util.TraceLine({
+            start  = pos,
+            endpos = pos + testFwd * PROBE_DIAG,
+            filter = self,
+            mask   = PROBE_MASK,
+        })
+        if tr.Hit then penalty = penalty + 4 end
+
+        if penalty < bestPenalty then
+            bestPenalty = penalty
+            bestList    = { testYaw }
+        elseif penalty == bestPenalty then
+            bestList[#bestList + 1] = testYaw
+        end
+    end
+
+    -- Among equally good candidates, pick at random (polar freedom).
+    return bestList[math.random(#bestList)]
+end
+
+function ENT:UpdateEvasion()
+    if self.IsTumbling or self.IsDestroyed then return 0 end
+
+    local anyHit, hitUp, hitDown, hitLeft, hitRight, hitFwdL, hitFwdR = self:RunObstacleProbes()
+    local ct = CurTime()
+
+    if anyHit then
+        self.EvasionClearT = 0
+
+        if not self.IsEvading then
+            -- Pick the best clear heading across all 8 directions.
+            self.EvasionYaw   = self:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
+            self.IsEvading    = true
+            self.EvasionPitch = 0
+            self:Debug("Evasion started → yaw " .. string.format("%.1f", self.EvasionYaw))
+        else
+            -- Re-score every tick while still blocked so we track a moving obstacle.
+            self.EvasionYaw = self:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
+        end
+
+        -- Vertical evasion: pitch away from blocked vertical direction.
+        if hitDown and not hitUp then
+            self.EvasionPitch = self.EvasionPitch - EVASION_PITCH_NUDGE
+        elseif hitUp and not hitDown then
+            self.EvasionPitch = self.EvasionPitch + EVASION_PITCH_NUDGE
+        end
+        self.EvasionPitch = math.Clamp(self.EvasionPitch, -EVASION_PITCH_MAX, EVASION_PITCH_MAX)
+    else
+        if self.IsEvading then
+            if self.EvasionClearT == 0 then
+                self.EvasionClearT = ct
+            elseif ct - self.EvasionClearT >= CLEAR_TIME then
+                self.IsEvading     = false
+                self.EvasionClearT = 0
+                self.EvasionPitch  = 0
+                self:Debug("Evasion cleared")
+            end
+        end
+    end
+
+    return self.EvasionPitch
 end
 
 -- ============================================================
@@ -427,6 +582,7 @@ function ENT:PhysicsUpdate(phys)
     local pos = self:GetPos()
     local dt  = engine.TickInterval()
 
+    -- Altitude drift
     if CurTime() >= self.AltDriftNextPick then
         self.AltDriftTarget   = self.sky + math.Rand(-self.AltDriftRange, self.AltDriftRange)
         self.AltDriftNextPick = CurTime() + math.Rand(8, 20)
@@ -435,50 +591,66 @@ function ENT:PhysicsUpdate(phys)
     self.JitterPhase     = self.JitterPhase + 0.04
     local liveAlt = self.AltDriftCurrent + math.sin(self.JitterPhase) * self.JitterAmplitude
 
-    local flatPos    = Vector(pos.x, pos.y, 0)
-    local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
-    local toCenter   = flatCenter - flatPos
-    local dist       = toCenter:Length()
+    -- Run obstacle evasion probes
+    local evasionPitchCorrection = self:UpdateEvasion()
 
-    local radialDir  = (dist > 1) and (toCenter / dist) or Vector(0,0,0)
-    local tangentDir = Vector(-radialDir.y, radialDir.x, 0) * self.OrbitDirection
-    if tangentDir:LengthSqr() <= 0.001 then
-        tangentDir = Angle(0, self.flightYaw, 0):Forward()
-        tangentDir.z = 0
+    -- Determine desired heading: evasion overrides normal orbit
+    local desiredYaw
+
+    if self.IsEvading then
+        -- Blend current flightYaw toward evasion yaw
+        local delta   = math.NormalizeAngle(self.EvasionYaw - self.flightYaw)
+        desiredYaw    = self.flightYaw + delta * EVASION_BLEND
+    else
+        -- Normal orbit: tangential + radial correction + sky avoidance
+        local flatPos    = Vector(pos.x, pos.y, 0)
+        local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
+        local toCenter   = flatCenter - flatPos
+        local dist       = toCenter:Length()
+
+        local radialDir  = (dist > 1) and (toCenter / dist) or Vector(0,0,0)
+        local tangentDir = Vector(-radialDir.y, radialDir.x, 0) * self.OrbitDirection
+        if tangentDir:LengthSqr() <= 0.001 then
+            tangentDir = Angle(0, self.flightYaw, 0):Forward()
+            tangentDir.z = 0
+        end
+        tangentDir:Normalize()
+
+        local radialError = 0
+        if self.OrbitRadius > 0 then
+            radialError = math.Clamp((dist - self.OrbitRadius) / self.OrbitRadius, -1, 1)
+        end
+
+        local desiredDir = tangentDir + radialDir * radialError * self.RadialGain
+
+        -- Sky avoidance (original logic, kept intact)
+        local fwdProbe  = Angle(0, self.flightYaw, 0):Forward()
+        local probeDist = math.max(1200, self.Speed * 6)
+        local trFwd   = util.QuickTrace(pos, fwdProbe * probeDist, self)
+        local trLeft  = util.QuickTrace(pos, fwdProbe:Angle():Right() * -900 + fwdProbe * 600, self)
+        local trRight = util.QuickTrace(pos, fwdProbe:Angle():Right() *  900 + fwdProbe * 600, self)
+
+        local skyAvoid = Vector(0,0,0)
+        if trFwd.HitSky   then skyAvoid = skyAvoid - fwdProbe end
+        if trLeft.HitSky  then skyAvoid = skyAvoid + fwdProbe:Angle():Right() end
+        if trRight.HitSky then skyAvoid = skyAvoid - fwdProbe:Angle():Right() end
+        skyAvoid.z = 0
+        if skyAvoid:LengthSqr() > 0.001 then
+            skyAvoid:Normalize()
+            desiredDir = desiredDir + skyAvoid * self.SkyAvoidGain
+        end
+
+        desiredDir.z = 0
+        if desiredDir:LengthSqr() <= 0.001 then desiredDir = tangentDir end
+        desiredDir:Normalize()
+
+        desiredYaw = desiredDir:Angle().y
     end
-    tangentDir:Normalize()
 
-    local radialError = 0
-    if self.OrbitRadius > 0 then
-        radialError = math.Clamp((dist - self.OrbitRadius) / self.OrbitRadius, -1, 1)
-    end
-
-    local desiredDir = tangentDir + radialDir * radialError * self.RadialGain
-
-    local fwdProbe  = Angle(0, self.flightYaw, 0):Forward()
-    local probeDist = math.max(1200, self.Speed * 6)
-    local trFwd   = util.QuickTrace(pos, fwdProbe * probeDist, self)
-    local trLeft  = util.QuickTrace(pos, fwdProbe:Angle():Right() * -900 + fwdProbe * 600, self)
-    local trRight = util.QuickTrace(pos, fwdProbe:Angle():Right() *  900 + fwdProbe * 600, self)
-
-    local skyAvoid = Vector(0,0,0)
-    if trFwd.HitSky   then skyAvoid = skyAvoid - fwdProbe end
-    if trLeft.HitSky  then skyAvoid = skyAvoid + fwdProbe:Angle():Right() end
-    if trRight.HitSky then skyAvoid = skyAvoid - fwdProbe:Angle():Right() end
-    skyAvoid.z = 0
-    if skyAvoid:LengthSqr() > 0.001 then
-        skyAvoid:Normalize()
-        desiredDir = desiredDir + skyAvoid * self.SkyAvoidGain
-    end
-
-    desiredDir.z = 0
-    if desiredDir:LengthSqr() <= 0.001 then desiredDir = tangentDir end
-    desiredDir:Normalize()
-
-    local desiredYaw = desiredDir:Angle().y
-    local yawDiff    = math.NormalizeAngle(desiredYaw - self.flightYaw)
-    local maxStep    = self.MaxTurnRate * dt
-    self.flightYaw   = self.flightYaw + math.Clamp(yawDiff, -maxStep, maxStep)
+    -- Apply turn-rate clamp
+    local yawDiff  = math.NormalizeAngle(desiredYaw - self.flightYaw)
+    local maxStep  = self.MaxTurnRate * dt
+    self.flightYaw = self.flightYaw + math.Clamp(yawDiff, -maxStep, maxStep)
 
     local rawYawDelta  = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
     self.PrevYaw       = self.flightYaw
@@ -486,9 +658,10 @@ function ENT:PhysicsUpdate(phys)
     local targetRoll   = math.Clamp(rawYawDelta * -20, -20, 20)
     self.SmoothedRoll  = Lerp(math.abs(rawYawDelta) > 0.01 and 0.12 or 0.04, self.SmoothedRoll, targetRoll)
 
-    local fwdDir       = Angle(0, self.flightYaw, 0):Forward()
-    local climbDelta   = math.Clamp((liveAlt - pos.z) / 450, -1, 1)
-    self.SmoothedPitch = Lerp(0.04, self.SmoothedPitch, math.Clamp(climbDelta * 8, -8, 8))
+    local fwdDir    = Angle(0, self.flightYaw, 0):Forward()
+    local climbDelta = math.Clamp((liveAlt - pos.z) / 450, -1, 1)
+    local pitchTarget = math.Clamp(climbDelta * 8 + (evasionPitchCorrection or 0), -8, 8)
+    self.SmoothedPitch = Lerp(0.04, self.SmoothedPitch, pitchTarget)
 
     self.ang = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
 
@@ -496,13 +669,16 @@ function ENT:PhysicsUpdate(phys)
     newPos.z = Lerp(0.08, pos.z, liveAlt)
 
     if not util.IsInWorld(newPos) then
-        local rescueDir = flatCenter - flatPos
-        rescueDir.z = 0
-        if rescueDir:LengthSqr() <= 0.001 then rescueDir = -fwdDir rescueDir.z = 0 end
-        rescueDir:Normalize()
-        newPos = pos + rescueDir * self.Speed * dt
+        -- Out-of-world guard: pick the clearest escape heading
+        if not self.IsEvading then
+            self.EvasionYaw   = self:PickBestEvasionYaw(false, false, false, false)
+            self.IsEvading    = true
+            self.EvasionPitch = 0
+        end
+        self.EvasionYaw = self:PickBestEvasionYaw(false, false, false, false)
+        self:Debug("Out-of-world guard — re-probing escape heading")
+        newPos = pos + Angle(0, self.flightYaw, 0):Forward() * self.Speed * dt
         newPos.z = math.min(pos.z, liveAlt)
-        self.flightYaw = rescueDir:Angle().y
         self.ang = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
     end
 
@@ -515,7 +691,7 @@ function ENT:PhysicsUpdate(phys)
     end
 
     if not self:IsInWorld() then
-        self:Debug("Out of world — center recovery")
+        self:Debug("Still out of world — center recovery")
         local safePos = Vector(self.CenterPos.x, self.CenterPos.y, self.sky)
         self:SetPos(safePos)
         if IsValid(phys) then phys:SetPos(safePos) phys:SetVelocity(Vector(0,0,0)) end
@@ -867,7 +1043,7 @@ function ENT:UpdateVikhr(ct)
 
     rocket.IdleSound = CreateSound(rocket, SOUND_ROCKET_IDLE)
     if rocket.IdleSound then rocket.IdleSound:Play() rocket.IdleSound:ChangePitch(math.random(85,110),0) rocket.IdleSound:ChangeVolume(0.9,0) end
-    rocket.OnRemove  = function(s) if s.IdleSound then s.IdleSound:Stop() end end
+    rocket.OnRemove  = function(s) if s.IdleLoop then s.IdleSound:Stop() end end
     rocket.OnExplode = function(s,p,n)
         if s.IdleSound then s.IdleSound:Stop() end
         local hp = p or s:GetPos()
