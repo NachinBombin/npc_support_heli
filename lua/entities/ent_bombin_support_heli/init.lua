@@ -77,23 +77,20 @@ local CFG_MaxHP        = 3100
 
 -- ============================================================
 -- OBSTACLE EVASION CONSTANTS
--- No handedness — evasion yaw is chosen by scoring all candidate
--- headings and picking the one with the clearest path.
+-- Polar-free: all 8 headings scored equally, random tiebreak.
 -- ============================================================
-local PROBE_FORWARD  = 3200   -- forward lookahead
-local PROBE_DIAG     = 2400   -- 45-deg diagonals
-local PROBE_SIDE     = 1600   -- pure lateral
+local PROBE_FORWARD  = 3200
+local PROBE_DIAG     = 2400
+local PROBE_SIDE     = 1600
 local PROBE_UP       = 900
 local PROBE_DOWN     = 700
 local PROBE_MASK     = MASK_SOLID_BRUSHONLY
 
-local EVASION_BLEND  = 0.14   -- how fast we steer toward the evasion yaw
-local EVASION_PITCH_NUDGE = 0.12   -- deg/tick added when up/down blocked
+local EVASION_BLEND       = 0.14
+local EVASION_PITCH_NUDGE = 0.12
 local EVASION_PITCH_MAX   = 8
-local CLEAR_TIME     = 2.5    -- seconds of clear probes before evasion ends
+local CLEAR_TIME          = 2.5
 
--- Candidate headings (relative to current yaw, degrees) scored during evasion.
--- Even spread → no left/right bias.
 local EVASION_CANDIDATES = { 0, 45, 90, 135, 180, 225, 270, 315 }
 
 -- ============================================================
@@ -176,7 +173,7 @@ function ENT:Initialize()
     self.DieTime   = CurTime() + self.Lifetime
     self.SpawnTime = CurTime()
 
-    -- Orbit direction is random (fully polar-free). +1 = CCW, -1 = CW.
+    -- Orbit direction: random, polar-free.
     self.OrbitDirection = (math.random(2) == 1) and 1 or -1
 
     local outward = VectorRand()
@@ -244,7 +241,7 @@ function ENT:Initialize()
     self.EvasionClearT    = 0
 
     self.IsTumbling        = false
-    self.TumbleStartTime   = 0
+    self.TumbleLastTime    = 0
     self.TumbleGroundZ     = ground
     self.TumbleCrashed     = false
     self.TumbleVelocity    = Vector(0,0,0)
@@ -301,8 +298,6 @@ end
 
 -- ============================================================
 -- OBSTACLE EVASION — POLAR-FREE
--- No hardcoded left/right nudge. All eight cardinal+diagonal
--- headings are probed and scored; the clearest wins.
 -- ============================================================
 
 function ENT:RunObstacleProbes()
@@ -333,14 +328,12 @@ function ENT:RunObstacleProbes()
 end
 
 function ENT:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
-    -- Score all 8 candidate headings (relative to current flightYaw).
-    -- A heading gets a penalty if it points toward a blocked probe direction.
-    -- The heading with the LOWEST penalty wins.
-    -- Equal penalties → pick randomly (no inherent hand bias).
-    local pos    = self:GetPos()
-    local best   = nil
+    local pos         = self:GetPos()
     local bestPenalty = math.huge
-    local bestList   = {}
+    local bestList    = {}
+
+    local fwdRef = Angle(0, self.flightYaw, 0):Forward(); fwdRef.z = 0; fwdRef:Normalize()
+    local rgtRef = Angle(0, self.flightYaw, 0):Right();   rgtRef.z = 0; rgtRef:Normalize()
 
     for _, offset in ipairs(EVASION_CANDIDATES) do
         local testYaw = math.NormalizeAngle(self.flightYaw + offset)
@@ -349,10 +342,6 @@ function ENT:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
         testFwd:Normalize()
 
         local penalty = 0
-        -- penalise headings that point into known blocked directions
-        local fwdRef  = Angle(0, self.flightYaw, 0):Forward(); fwdRef.z = 0; fwdRef:Normalize()
-        local rgtRef  = Angle(0, self.flightYaw, 0):Right();   rgtRef.z = 0; rgtRef:Normalize()
-
         local dotFwd  = testFwd:Dot(fwdRef)
         local dotRgt  = testFwd:Dot(rgtRef)
 
@@ -361,7 +350,6 @@ function ENT:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
         if hitLeft  and dotRgt < -0.6 then penalty = penalty + 3 end
         if hitRight and dotRgt >  0.6 then penalty = penalty + 3 end
 
-        -- cast a quick trace in this candidate direction as a final confirmation
         local tr = util.TraceLine({
             start  = pos,
             endpos = pos + testFwd * PROBE_DIAG,
@@ -378,7 +366,6 @@ function ENT:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
         end
     end
 
-    -- Among equally good candidates, pick at random (polar freedom).
     return bestList[math.random(#bestList)]
 end
 
@@ -392,17 +379,14 @@ function ENT:UpdateEvasion()
         self.EvasionClearT = 0
 
         if not self.IsEvading then
-            -- Pick the best clear heading across all 8 directions.
             self.EvasionYaw   = self:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
             self.IsEvading    = true
             self.EvasionPitch = 0
             self:Debug("Evasion started → yaw " .. string.format("%.1f", self.EvasionYaw))
         else
-            -- Re-score every tick while still blocked so we track a moving obstacle.
             self.EvasionYaw = self:PickBestEvasionYaw(hitLeft, hitRight, hitFwdL, hitFwdR)
         end
 
-        -- Vertical evasion: pitch away from blocked vertical direction.
         if hitDown and not hitUp then
             self.EvasionPitch = self.EvasionPitch - EVASION_PITCH_NUDGE
         elseif hitUp and not hitDown then
@@ -452,9 +436,9 @@ end
 -- ============================================================
 
 function ENT:StartTumble()
-    self.IsTumbling      = true
-    self.TumbleStartTime = CurTime()
-    self.TumbleCrashed   = false
+    self.IsTumbling     = true
+    self.TumbleLastTime = CurTime()
+    self.TumbleCrashed  = false
 
     local gnd = self:FindGround(self:GetPos())
     if gnd ~= -1 then self.TumbleGroundZ = gnd end
@@ -471,10 +455,50 @@ function ENT:StartTumble()
         math.Rand(150, 400) * sign()
     )
 
+    -- Silence physics so it does not fight the tumble integration
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:EnableGravity(false)
+        phys:SetVelocity(Vector(0,0,0))
+        phys:SetAngleVelocity(Vector(0,0,0))
+        phys:Sleep()
+    end
+
     local pos = self:GetPos()
-    local ed = EffectData() ed:SetOrigin(pos) ed:SetScale(4) ed:SetMagnitude(4) ed:SetRadius(400)
+    local ed  = EffectData() ed:SetOrigin(pos) ed:SetScale(4) ed:SetMagnitude(4) ed:SetRadius(400)
     util.Effect("500lb_air", ed, true, true)
     sound.Play("ambient/explosions/explode_4.wav", pos, 135, 95, 1.0)
+end
+
+function ENT:UpdateTumble(ct)
+    if not self.IsTumbling or self.TumbleCrashed then return end
+
+    local dt = ct - self.TumbleLastTime
+    self.TumbleLastTime = ct
+    if dt <= 0 or dt > 0.2 then return end
+
+    local gravity = physenv.GetGravity().z
+    self.TumbleVelocity.z = self.TumbleVelocity.z + gravity * dt
+
+    local pos    = self:GetPos()
+    local newPos = pos + self.TumbleVelocity * dt
+    local av     = self.TumbleAngVelocity
+    self.ang     = Angle(self.ang.p + av.x*dt, self.ang.y + av.y*dt, self.ang.r + av.z*dt)
+
+    local hitGround = newPos.z <= (self.TumbleGroundZ or -16384) + 200
+    local hitWall   = false
+    if not hitGround then
+        local tr = util.TraceLine({ start = pos, endpos = newPos, filter = self, mask = MASK_SOLID_BRUSHONLY })
+        hitWall = tr.HitWorld
+    end
+
+    if hitGround or hitWall then
+        self:CrashExplode()
+        return
+    end
+
+    self:SetPos(newPos)
+    self:SetAngles(self.ang)
 end
 
 function ENT:CrashExplode()
@@ -521,13 +545,12 @@ function ENT:Think()
 
     local ct = CurTime()
 
-    if self.IsTumbling and not self.TumbleCrashed then
-        local pos     = self:GetPos()
-        local groundZ = self.TumbleGroundZ or -16384
-        if pos.z <= groundZ + 150 then self:CrashExplode() return end
-        local tr = util.TraceLine({ start=pos, endpos=pos+Vector(0,0,-200), filter=self })
-        if tr.HitWorld then self:CrashExplode() return end
-        self:NextThink(ct + 0.05)
+    -- Tumble is driven here (not in PhysicsUpdate) so we have a clean dt.
+    if self.IsTumbling then
+        if not self.TumbleCrashed then
+            self:UpdateTumble(ct)
+        end
+        self:NextThink(ct + 0.015)
         return true
     end
 
@@ -554,33 +577,29 @@ function ENT:Think()
 end
 
 -- ============================================================
--- FLIGHT / TUMBLE PHYSICS
+-- FLIGHT PHYSICS
+-- KEY RULE (matches AC-130 architecture):
+--   During normal flight, only phys:SetPos() and phys:SetAngles()
+--   are called. self:SetPos() / self:SetAngles() are NEVER called
+--   here — doing both on the same tick is what caused teleporting.
+--   The physics engine propagates phys pos → entity transform.
+-- Tumble is driven by Think/UpdateTumble using self:SetPos() because
+--   the phys object is asleep during tumble.
 -- ============================================================
 
 function ENT:PhysicsUpdate(phys)
-    if not self.DieTime or not self.sky then return end
-
-    if self.IsTumbling then
-        if self.TumbleCrashed then return end
-
-        local dt      = engine.TickInterval()
-        local gravity = physenv.GetGravity().z
-        self.TumbleVelocity.z = self.TumbleVelocity.z + gravity * dt
-
-        local pos    = self:GetPos()
-        local newPos = pos + self.TumbleVelocity * dt
-        local av = self.TumbleAngVelocity
-        self.ang = Angle(self.ang.p + av.x*dt, self.ang.y + av.y*dt, self.ang.r + av.z*dt)
-
-        self:SetPos(newPos) self:SetAngles(self.ang)
-        if IsValid(phys) then phys:SetPos(newPos) phys:SetAngles(self.ang) end
+    -- During tumble the phys object is asleep; bail out completely.
+    if self.IsTumbling or self.IsDestroyed then
+        phys:SetVelocity(Vector(0,0,0))
+        phys:SetAngleVelocity(Vector(0,0,0))
         return
     end
 
+    if not self.DieTime or not self.sky then return end
     if CurTime() >= self.DieTime then self:Remove() return end
 
     local pos = self:GetPos()
-    local dt  = engine.TickInterval()
+    local ft  = engine.TickInterval()
 
     -- Altitude drift
     if CurTime() >= self.AltDriftNextPick then
@@ -591,18 +610,17 @@ function ENT:PhysicsUpdate(phys)
     self.JitterPhase     = self.JitterPhase + 0.04
     local liveAlt = self.AltDriftCurrent + math.sin(self.JitterPhase) * self.JitterAmplitude
 
-    -- Run obstacle evasion probes
-    local evasionPitchCorrection = self:UpdateEvasion()
+    -- Evasion probes
+    local evasionPitch = self:UpdateEvasion()
 
-    -- Determine desired heading: evasion overrides normal orbit
+    -- Desired yaw: evasion overrides orbit
     local desiredYaw
 
     if self.IsEvading then
-        -- Blend current flightYaw toward evasion yaw
-        local delta   = math.NormalizeAngle(self.EvasionYaw - self.flightYaw)
-        desiredYaw    = self.flightYaw + delta * EVASION_BLEND
+        local delta = math.NormalizeAngle(self.EvasionYaw - self.flightYaw)
+        desiredYaw  = self.flightYaw + delta * EVASION_BLEND
     else
-        -- Normal orbit: tangential + radial correction + sky avoidance
+        -- Normal orbit
         local flatPos    = Vector(pos.x, pos.y, 0)
         local flatCenter = Vector(self.CenterPos.x, self.CenterPos.y, 0)
         local toCenter   = flatCenter - flatPos
@@ -623,7 +641,7 @@ function ENT:PhysicsUpdate(phys)
 
         local desiredDir = tangentDir + radialDir * radialError * self.RadialGain
 
-        -- Sky avoidance (original logic, kept intact)
+        -- Sky avoidance
         local fwdProbe  = Angle(0, self.flightYaw, 0):Forward()
         local probeDist = math.max(1200, self.Speed * 6)
         local trFwd   = util.QuickTrace(pos, fwdProbe * probeDist, self)
@@ -643,59 +661,56 @@ function ENT:PhysicsUpdate(phys)
         desiredDir.z = 0
         if desiredDir:LengthSqr() <= 0.001 then desiredDir = tangentDir end
         desiredDir:Normalize()
-
         desiredYaw = desiredDir:Angle().y
     end
 
-    -- Apply turn-rate clamp
+    -- Turn-rate clamp
     local yawDiff  = math.NormalizeAngle(desiredYaw - self.flightYaw)
-    local maxStep  = self.MaxTurnRate * dt
+    local maxStep  = self.MaxTurnRate * ft
     self.flightYaw = self.flightYaw + math.Clamp(yawDiff, -maxStep, maxStep)
 
-    local rawYawDelta  = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
-    self.PrevYaw       = self.flightYaw
+    local rawYawDelta = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
+    self.PrevYaw      = self.flightYaw
 
-    local targetRoll   = math.Clamp(rawYawDelta * -20, -20, 20)
-    self.SmoothedRoll  = Lerp(math.abs(rawYawDelta) > 0.01 and 0.12 or 0.04, self.SmoothedRoll, targetRoll)
+    -- Bank & pitch
+    local targetRoll  = math.Clamp(rawYawDelta * -20, -20, 20)
+    self.SmoothedRoll = Lerp(math.abs(rawYawDelta) > 0.01 and 0.12 or 0.04, self.SmoothedRoll, targetRoll)
 
-    local fwdDir    = Angle(0, self.flightYaw, 0):Forward()
-    local climbDelta = math.Clamp((liveAlt - pos.z) / 450, -1, 1)
-    local pitchTarget = math.Clamp(climbDelta * 8 + (evasionPitchCorrection or 0), -8, 8)
+    local climbDelta  = math.Clamp((liveAlt - pos.z) / 450, -1, 1)
+    local pitchTarget = math.Clamp(climbDelta * 8 + evasionPitch, -8, 8)
     self.SmoothedPitch = Lerp(0.04, self.SmoothedPitch, pitchTarget)
 
-    self.ang = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
+    local finalAng = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
 
-    local newPos = pos + fwdDir * self.Speed * dt
-    newPos.z = Lerp(0.08, pos.z, liveAlt)
+    -- Desired next position
+    local fwdDir = Angle(0, self.flightYaw, 0):Forward()
+    local newPos = Vector(
+        pos.x + fwdDir.x * self.Speed * ft,
+        pos.y + fwdDir.y * self.Speed * ft,
+        liveAlt
+    )
 
+    -- Out-of-world guard: discard the move, nudge evasion yaw, keep current pos.
+    -- Do NOT teleport to center — that was the source of the teleport loops.
     if not util.IsInWorld(newPos) then
-        -- Out-of-world guard: pick the clearest escape heading
+        self:Debug("Out-of-world move discarded")
         if not self.IsEvading then
             self.EvasionYaw   = self:PickBestEvasionYaw(false, false, false, false)
             self.IsEvading    = true
             self.EvasionPitch = 0
+        else
+            self.EvasionYaw = self:PickBestEvasionYaw(false, false, false, false)
         end
-        self.EvasionYaw = self:PickBestEvasionYaw(false, false, false, false)
-        self:Debug("Out-of-world guard — re-probing escape heading")
-        newPos = pos + Angle(0, self.flightYaw, 0):Forward() * self.Speed * dt
-        newPos.z = math.min(pos.z, liveAlt)
-        self.ang = Angle(self.SmoothedPitch, self.flightYaw + MODEL_YAW_OFFSET, self.SmoothedRoll)
+        -- Only update angle; keep pos unchanged.
+        phys:SetAngles(finalAng)
+        return
     end
 
-    self:SetPos(newPos)
-    self:SetAngles(self.ang)
-    if IsValid(phys) then
-        phys:SetPos(newPos)
-        phys:SetAngles(self.ang)
-        phys:SetVelocity(fwdDir * self.Speed)
-    end
-
-    if not self:IsInWorld() then
-        self:Debug("Still out of world — center recovery")
-        local safePos = Vector(self.CenterPos.x, self.CenterPos.y, self.sky)
-        self:SetPos(safePos)
-        if IsValid(phys) then phys:SetPos(safePos) phys:SetVelocity(Vector(0,0,0)) end
-    end
+    -- Drive position and angle through physics object ONLY.
+    -- Never call self:SetPos() here; the engine syncs entity pos from phys.
+    phys:SetPos(newPos)
+    phys:SetAngles(finalAng)
+    phys:SetVelocity(fwdDir * self.Speed)
 end
 
 -- ============================================================
@@ -925,7 +940,6 @@ end
 
 function ENT:Update30mmSustained(ct)
     if ct >= self.WeaponWindowEnd then return end
-
     if ct < self.SprayPauseUntil then return end
 
     if self.SprayBurstRoundsLeft <= 0 then
